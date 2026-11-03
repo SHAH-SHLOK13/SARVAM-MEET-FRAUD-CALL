@@ -27,4 +27,4 @@ backend\.venv\Scripts\python integration_tests\replay_audio.py eval\audio\s01_mu
 
 Results are written to `eval/results/` with the config version and timestamp.
 
-Groq free tier is 8k tokens/min per model, so a full LLM run takes several minutes (it waits on 429s).
+An LLM run uses Sarvam (`sarvam-105b`, `gemma4` fallback; set `CALLSHIELD_LLM_BACKENDS` to test one model) and takes a few minutes; it waits and retries if rate-limited.
