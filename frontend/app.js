@@ -53,15 +53,7 @@ class CallShieldApp {
   async init() {
     this._bindGlobalDom();
 
-    // Check system health
-    try {
-      const health = await api.getHealth();
-      state.setSystemHealth(health);
-      this.renderSystemHealth(health);
-    } catch (err) {
-      console.warn('System health check error:', err);
-      this.renderSystemHealth(null);
-    }
+    await this.refreshHealth();
 
     // Connect WebSocket
     this.ws = new DashboardWs(
@@ -309,7 +301,21 @@ class CallShieldApp {
     }
   }
 
+  // Also re-run when the stream (re)connects: a check made while Render was waking up from
+  // sleep would otherwise leave "Backend: Unreachable" on screen for good.
+  async refreshHealth() {
+    try {
+      const health = await api.getHealth();
+      state.setSystemHealth(health);
+      this.renderSystemHealth(health);
+    } catch (err) {
+      console.warn('System health check error:', err);
+      this.renderSystemHealth(null);
+    }
+  }
+
   handleWsStatus(status, text) {
+    if (status === 'connected') this.refreshHealth();
     const pill = document.getElementById('connectionPill');
     const label = document.getElementById('connectionText');
     if (pill) {
