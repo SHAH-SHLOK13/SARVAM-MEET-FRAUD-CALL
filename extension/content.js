@@ -212,6 +212,8 @@
   // aria-live announcement regions as a best-effort fallback. Both paths share one dedupe.
 
   const CHAT_LABEL = /chat with everyone|^chat$|in-call messages|चैट/i;
+  // ponytail: English Meet UI notices only; extend if testing with a Hindi Meet UI.
+  const MEET_NOTICE = /seconds? left|returning to home screen|\b(joined|left the call|has left|is presenting|stopped presenting|raised (a|their) hand|you('re| are) (muted|presenting))\b/i;
   const seenChat = new Map(); // message id -> text
   const recentTexts = []; // { norm, t } across both paths
   const seenLive = new WeakMap(); // aria-live element -> last text
@@ -290,10 +292,13 @@
       const links = [...el.querySelectorAll('a[href]')].map((a) => a.href).slice(0, 10);
       sendChat(edited ? `${id}#${seenChat.size}` : id, text, links, 'chat_panel');
     }
+    // aria-live is only a fallback for a closed chat panel: it also carries Meet's own system
+    // notices ("Returning to home screen in 60 seconds", "X joined"), which are not messages.
+    if (chatPanelOpen() === true) return;
     for (const el of document.querySelectorAll('[aria-live]')) {
       if (host.contains(el)) continue;
       const text = (el.innerText || '').trim();
-      if (!text || text.length < 3 || seenLive.get(el) === text) continue;
+      if (!text || text.length < 3 || seenLive.get(el) === text || MEET_NOTICE.test(text)) continue;
       seenLive.set(el, text);
       if (isDuplicateText(text)) continue;
       const links = [...el.querySelectorAll('a[href]')].map((a) => a.href).slice(0, 10);

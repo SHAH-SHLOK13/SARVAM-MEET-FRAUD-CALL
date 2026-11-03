@@ -1,0 +1,17 @@
+# Render blueprint: dashboard.render.com -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: callshield
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn callshield.main:create_app --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SARVAM_API_KEY
+        sync: false   # asked for at deploy time, never stored in the repo
+      - key: CALLSHIELD_TOKEN
+        sync: false   # pick a secret; enter the same value in the extension popup and dashboard
