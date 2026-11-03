@@ -212,8 +212,9 @@
   // aria-live announcement regions as a best-effort fallback. Both paths share one dedupe.
 
   const CHAT_LABEL = /chat with everyone|^chat$|in-call messages|चैट/i;
-  // ponytail: English Meet UI notices only; extend if testing with a Hindi Meet UI.
-  const MEET_NOTICE = /seconds? left|returning to home screen|\b(joined|left the call|has left|is presenting|stopped presenting|raised (a|their) hand|you('re| are) (muted|presenting))\b/i;
+  // Whole-string match only, so a scammer's message that merely contains "10 seconds left"
+  // is never suppressed. ponytail: English Meet UI notices only; extend for a Hindi Meet UI.
+  const MEET_NOTICE = /^(\d+ seconds? left\.?|returning to home screen in \d+ seconds?\.?|[^:\n]{1,60} (joined|left|has left|left the call|is presenting|stopped presenting|raised (a|their) hand)\.?|you('re| are) (muted|presenting)\.?)$/i;
   const seenChat = new Map(); // message id -> text
   const recentTexts = []; // { norm, t } across both paths
   const seenLive = new WeakMap(); // aria-live element -> last text
