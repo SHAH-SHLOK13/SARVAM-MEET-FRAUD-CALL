@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+.env
+
+# third-party photos used only for local vision tests (licenses in CREDITS.json)
+eval/images/external/
