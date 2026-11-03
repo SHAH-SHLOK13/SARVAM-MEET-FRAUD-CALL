@@ -117,6 +117,7 @@ class RiskResult:
     latest_text_evidence_end_ms: int | None = None
     contributions: dict[str, float] = field(default_factory=dict)
     last_mitigation_ms: int | None = None   # end time of the newest mitigating cue
+    last_flag_ms: int | None = None          # end time of the newest risk-raising text evidence
     raw_risk_index: int = 0                  # what the index would be without mitigation
 
 
@@ -303,5 +304,8 @@ class RiskEngine:
             latest_text_evidence_end_ms=latest_text_end,
             contributions={k: round(v, 4) for k, (v, _) in best.items()},
             last_mitigation_ms=max((t for t, _ in cues), default=None),
+            last_flag_ms=max((e.evidence.t_end_ms for e in self.entries.values()
+                              if cfg.categories[e.evidence.category].effect == "raise"
+                              and cfg.categories[e.evidence.category].modality == "text"), default=None),
             raw_risk_index=raw_risk_index,
         )

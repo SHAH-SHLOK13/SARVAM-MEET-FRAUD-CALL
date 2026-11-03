@@ -78,7 +78,8 @@ Deterministic, reproducible (`backend/callshield/fusion.py`, values in `backend/
    *after* the cue count in full, and negations ("ye fraud nahi hai", "mazaak nahi hai") never count.
 3. Text risk = noisy-OR of the contributions; pattern bonuses scale with the share of evidence left.
 4. Auto-disconnect needs critical risk sustained 6 s, ≥3 behaviours incl. a strong one, live AI,
-   healthy monitoring, user opt-in, and **no mitigating cue in the last 30 s**; a pending countdown is
+   healthy monitoring, user opt-in, and **no mitigating cue in the last 30 s with no new demand after it**
+   (a cue can cancel only one countdown per call, so repeating "savdhan rahiye" cannot block it); a pending countdown is
    cancelled when one arrives.
 
 Dev-set result (24 scripted conversations, Sarvam `sarvam-105b`): 12/12 scams caught, 0/12 false alarms.

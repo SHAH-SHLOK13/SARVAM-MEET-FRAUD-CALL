@@ -189,3 +189,34 @@ def test_mitigation_cue_rules(text, cats):
 def test_fragment_lines(text, ok):
     from callshield.ai.detector import substantive
     assert substantive(text) is ok
+
+
+def test_repeated_cues_cannot_suppress_auto_disconnect(cfg):
+    """A scammer saying 'savdhan rahiye' between demands must not hold off the hang-up."""
+    eng = RiskEngine(cfg)
+    _scam(eng)
+    eng.add(ev(5, "video_custody", "call cut mat karna", t=T0 + 3500), "remote")
+    pol, settings = PolicyEngine(cfg), {"auto_disconnect": True}
+
+    def step(t):
+        return pol.decide(eng.assess(t), settings=settings, monitoring_state="ok",
+                          inference_mode="live", now_ms=t)
+
+    step(T0 + 4000)
+    t = T0 + 4000 + cfg.auto_disconnect.sustain_ms
+    assert [a.status for a in step(t)[1]] == ["pending"]
+    # cue 1 cancels once
+    eng.add(ev(9, "mitigation_caution", "savdhan rahiye", t=t + 1000, quality=1.0), "remote")
+    assert [a.status for a in step(t + 1000)[1]] == ["cancelled"]
+    # a new demand right after the cue ends the hold
+    eng.add(ev(10, "payment_demand", "abhi paise bhejiye", t=t + 20_000), "remote")
+    eng.add(ev(11, "credential_request", "OTP boliye", t=t + 21_000), "remote")
+    gate, _ = step(t + 21_000)
+    assert gate["no_recent_mitigation"]
+    # a second cue cannot cancel again in the same call
+    t2 = t + 40_000
+    step(t2)
+    eng.add(ev(12, "mitigation_caution", "savdhan rahiye", t=t2 + cfg.auto_disconnect.sustain_ms, quality=1.0), "remote")
+    eng.add(ev(13, "payment_demand", "turant transfer karo", t=t2 + cfg.auto_disconnect.sustain_ms + 500), "remote")
+    gate, _ = step(t2 + cfg.auto_disconnect.sustain_ms + 1000)
+    assert gate["no_recent_mitigation"]
