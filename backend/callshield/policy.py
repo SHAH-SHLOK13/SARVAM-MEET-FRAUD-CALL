@@ -19,18 +19,15 @@ class ActionRequest:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-MAX_MITIGATION_CANCELS = 1
-
-
 class PolicyEngine:
     def __init__(self, cfg: RiskConfig):
         self.cfg = cfg
         self.critical_since_ms: int | None = None
         self.auto_disconnect_issued = False
         self.auto_disconnect_issued_ms = 0
-        # A cue may cancel one countdown per call: otherwise a scammer could keep saying
-        # "savdhan rahiye" to stay below the auto-disconnect for the whole call.
-        self.mitigation_cancels = 0
+        # Only the FIRST mitigating cue of a call may hold off auto-disconnect (for hold_s):
+        # otherwise a scammer could keep saying "savdhan rahiye" for the whole call.
+        self.honoured_cue_ms: int | None = None
 
     def gate(self, r: RiskResult, *, settings: dict, monitoring_state: str,
              inference_mode: str, now_ms: int) -> dict[str, bool]:
@@ -38,11 +35,14 @@ class PolicyEngine:
         sustained = (self.critical_since_ms is not None
                      and now_ms - self.critical_since_ms >= ad.sustain_ms)
         hold_ms = self.cfg.mitigation.hold_s * 1000
-        held = (r.last_mitigation_ms is not None
-                and now_ms - r.last_mitigation_ms <= hold_ms
-                # a new demand/threat after the cue ends the hold at once
-                and (r.last_flag_ms is None or r.last_flag_ms <= r.last_mitigation_ms)
-                and self.mitigation_cancels < MAX_MITIGATION_CANCELS)
+        cue = r.last_mitigation_ms
+        held = (cue is not None
+                and now_ms - cue <= hold_ms
+                and self.honoured_cue_ms in (None, cue)
+                # any demand/threat in the same line as the cue or after it ends the hold
+                and (r.last_flag_ms is None or r.last_flag_ms < cue))
+        if held:
+            self.honoured_cue_ms = cue
         return {
             # Someone just framed the call as awareness / a joke / a test: don't hang up on that.
             "no_recent_mitigation": not held,
@@ -80,8 +80,6 @@ class PolicyEngine:
             # context) inside the cancel window.
             self.auto_disconnect_issued = False
             reason = "risk_revised" if checks["no_recent_mitigation"] else "mitigating_context"
-            if reason == "mitigating_context":
-                self.mitigation_cancels += 1
             actions.append(ActionRequest("auto_disconnect", "cancelled",
                                          {"reason": reason, "risk_level": r.risk_level}))
         return checks, actions

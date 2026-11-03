@@ -304,8 +304,10 @@ class RiskEngine:
             latest_text_evidence_end_ms=latest_text_end,
             contributions={k: round(v, 4) for k, (v, _) in best.items()},
             last_mitigation_ms=max((t for t, _ in cues), default=None),
+            # Only flags that can count (not the protected user's own words).
             last_flag_ms=max((e.evidence.t_end_ms for e in self.entries.values()
                               if cfg.categories[e.evidence.category].effect == "raise"
-                              and cfg.categories[e.evidence.category].modality == "text"), default=None),
+                              and cfg.categories[e.evidence.category].modality == "text"
+                              and cfg.speaker_factor.get(e.speaker_role, 0.0) > 0), default=None),
             raw_risk_index=raw_risk_index,
         )

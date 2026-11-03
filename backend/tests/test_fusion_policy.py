@@ -220,3 +220,24 @@ def test_repeated_cues_cannot_suppress_auto_disconnect(cfg):
     eng.add(ev(13, "payment_demand", "turant transfer karo", t=t2 + cfg.auto_disconnect.sustain_ms + 500), "remote")
     gate, _ = step(t2 + cfg.auto_disconnect.sustain_ms + 1000)
     assert gate["no_recent_mitigation"]
+
+
+def test_cue_in_same_line_as_demand_does_not_hold(cfg):
+    eng = RiskEngine(cfg)
+    _scam(eng)
+    eng.add(ev(5, "video_custody", "call cut mat karna", t=T0 + 3500), "remote")
+    t = T0 + 9000
+    eng.add(ev(9, "mitigation_caution", "savdhan rahiye, paise bhejiye", t=t, quality=1.0), "remote")
+    eng.add(ev(10, "payment_demand", "savdhan rahiye, paise bhejiye", t=t), "remote")
+    gate = PolicyEngine(cfg).gate(eng.assess(t), settings={"auto_disconnect": True},
+                                  monitoring_state="ok", inference_mode="live", now_ms=t)
+    assert gate["no_recent_mitigation"]
+
+
+def test_only_first_cue_can_hold_even_without_a_countdown(cfg):
+    eng, pol = RiskEngine(cfg), PolicyEngine(cfg)
+    kw = dict(settings={"auto_disconnect": True}, monitoring_state="ok", inference_mode="live")
+    eng.add(ev(1, "mitigation_caution", "savdhan rahiye", t=T0, quality=1.0), "remote")
+    assert not pol.gate(eng.assess(T0), now_ms=T0, **kw)["no_recent_mitigation"]
+    eng.add(ev(2, "mitigation_caution", "phir se savdhan", t=T0 + 40_000, quality=1.0), "remote")
+    assert pol.gate(eng.assess(T0 + 40_000), now_ms=T0 + 40_000, **kw)["no_recent_mitigation"]
