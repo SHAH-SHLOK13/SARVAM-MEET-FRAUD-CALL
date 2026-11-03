@@ -5,8 +5,13 @@ HackSplot 2026, PS1. Proof of concept.
 
 ## For evaluators (no setup, no keys)
 
-- **Live dashboard:** https://callshield-3lph.onrender.com/dashboard/ (opens directly; free hosting may take
-  ~1 minute to wake up the first time).
+- **One-click demo (no install):** open https://callshield-3lph.onrender.com/dashboard/ (free hosting may
+  take ~1 minute to wake up the first time) and click **▶ Play demo: scam call**. A recorded
+  digital-arrest call plays aloud while the server streams it through the *live* pipeline exactly like
+  the extension does: Sarvam speech-to-text, the scam detector, vision on video frames (a warrant is held
+  up), and a scam chat message. Watch the transcript, the risk rising to CRITICAL, the key-moment
+  screenshots and the AI call summary appear. Then click **▶ Play demo: awareness talk**: same words,
+  but a warning between friends, so the risk stays NORMAL.
 - **Extension** (already pointed at the hosted backend, nothing to configure):
   1. Download this repo as ZIP and unzip it.
   2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick the `extension/` folder.

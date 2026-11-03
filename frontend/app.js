@@ -80,6 +80,12 @@ class CallShieldApp {
       refreshBtn.onclick = () => this.loadSessions();
     }
 
+    // One-click demo: the server streams a recorded call through the live pipeline while the
+    // browser plays the same recording aloud.
+    document.querySelectorAll('.demo-btn').forEach((btn) => {
+      btn.onclick = () => this.playDemo(btn);
+    });
+
     // Token Config Modal
     const tokenBtn = document.getElementById('btnConfigToken');
     const tokenModal = document.getElementById('tokenModal');
@@ -142,6 +148,37 @@ class CallShieldApp {
     const endCallModal = document.getElementById('endCallConfirmModal');
     if (endCallModal) {
       endCallModal.classList.remove('hidden');
+    }
+  }
+
+  async playDemo(btn) {
+    const buttons = document.querySelectorAll('.demo-btn');
+    const label = btn.textContent;
+    buttons.forEach((b) => { b.disabled = true; });
+    btn.textContent = 'Starting…';
+    try {
+      const d = await api.startDemo(btn.dataset.scenario);
+      if (this.demoAudio) this.demoAudio.pause();
+      this.demoAudio = new Audio(api.withToken(d.audio_url));
+      this.demoAudio.play().catch(() => {});
+      await new Promise((r) => setTimeout(r, 800)); // let the session register
+      await this.loadSessions();
+      await this.selectSession(d.session_id);
+      let left = Math.ceil(d.duration_s);
+      btn.textContent = `Playing… ${left}s`;
+      const timer = setInterval(() => {
+        left -= 1;
+        btn.textContent = left > 0 ? `Playing… ${left}s` : 'Finishing analysis…';
+        if (left <= -12) {
+          clearInterval(timer);
+          btn.textContent = label;
+          buttons.forEach((b) => { b.disabled = false; });
+        }
+      }, 1000);
+    } catch (err) {
+      alert(`Could not start the demo: ${err.message}`);
+      btn.textContent = label;
+      buttons.forEach((b) => { b.disabled = false; });
     }
   }
 

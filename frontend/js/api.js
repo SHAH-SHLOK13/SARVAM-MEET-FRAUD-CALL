@@ -92,6 +92,15 @@ class ApiClient {
     return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/vision/latest`);
   }
 
+  // One-click demo (server replays a recorded call through the live pipeline)
+  async startDemo(scenario) {
+    return await this.request(`/api/demo/start?scenario=${encodeURIComponent(scenario)}`, { method: 'POST' });
+  }
+
+  withToken(path) {
+    return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(this.token)}`;
+  }
+
   // Call summary (Sarvam LLM, cached server-side) and key-moment screenshots
   async getSummary(sessionId) {
     return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, { method: 'POST' });

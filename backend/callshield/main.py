@@ -8,6 +8,7 @@ import hmac
 import logging
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -19,9 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .adapter import AIPipeline, MockPipeline, load_pipeline
-from .contracts import SCHEMA_VERSION
+from .contracts import SCHEMA_VERSION, now_ms
 from .fusion import load_risk_config
 from .hub import Hub
+from . import demo
 from .ai.summary import summarize
 from .report import build_report, report_markdown
 from .session import Deps, SessionManager
@@ -32,6 +34,10 @@ FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 SESSION_ID_RE = r"^[A-Za-z0-9_.-]{1,64}$"
 TICK_S = 2.0
+# Usage caps: the shared demo token is public, so bound what anyone holding it can spend.
+MAX_ACTIVE_SESSIONS = int(os.environ.get("CALLSHIELD_MAX_ACTIVE", "6"))
+MAX_SESSION_S = int(os.environ.get("CALLSHIELD_MAX_SESSION_S", "1800"))
+MAX_SESSIONS_PER_DAY = int(os.environ.get("CALLSHIELD_MAX_SESSIONS_PER_DAY", "150"))
 
 
 class InjectText(BaseModel):
@@ -62,6 +68,11 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
             await asyncio.sleep(tick_s)
             try:
                 await manager.tick()
+                cutoff = now_ms() - MAX_SESSION_S * 1000
+                for s in list(manager.sessions.values()):
+                    if s.active and s.created_ms < cutoff:
+                        log.warning("session %s hit the %ss cap; stopping", s.id, MAX_SESSION_S)
+                        await s.stop()
             except Exception:  # noqa: BLE001
                 log.exception("tick failed")
 
@@ -92,6 +103,42 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
             raise HTTPException(401, "invalid token")
 
     auth = [Depends(require_token)]
+    day_count = {"day": "", "n": 0}
+
+    def admit_new_session() -> bool:
+        if sum(1 for s in manager.sessions.values() if s.active) >= MAX_ACTIVE_SESSIONS:
+            return False
+        today = time.strftime("%Y-%m-%d")
+        if day_count["day"] != today:
+            day_count.update(day=today, n=0)
+        if day_count["n"] >= MAX_SESSIONS_PER_DAY:
+            return False
+        day_count["n"] += 1
+        return True
+
+    demo_tasks: set[asyncio.Task] = set()
+
+    @app.post("/api/demo/start", dependencies=auth)
+    async def demo_start(scenario: str = "scam") -> dict[str, Any]:
+        """One-click demo: replays a recorded call through the live pipeline (see demo.py)."""
+        if scenario not in demo.SCENARIOS:
+            raise HTTPException(404, "unknown scenario")
+        if not demo.can_start() or not admit_new_session():
+            raise HTTPException(429, "a demo is already running or the usage cap is reached; try again in a minute")
+        sid = demo.new_session_id()
+        task = asyncio.create_task(demo.run(manager, scenario, sid))
+        demo_tasks.add(task)
+        task.add_done_callback(demo_tasks.discard)
+        pcm_s = len(demo.scenario_pcm(scenario)) / 32000
+        return {"session_id": sid, "label": demo.SCENARIOS[scenario]["label"], "duration_s": round(pcm_s, 1),
+                "audio_url": f"/api/demo/audio/{scenario}.wav"}
+
+    @app.get("/api/demo/audio/{scenario}.wav", dependencies=auth)
+    def demo_audio(scenario: str):
+        if scenario not in demo.SCENARIOS:
+            raise HTTPException(404, "unknown scenario")
+        return Response(content=demo.scenario_wav(scenario), media_type="audio/wav",
+                        headers={"Cache-Control": "private, max-age=3600"})
 
     # ---------- WebSockets ----------
 
@@ -99,6 +146,9 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
     async def ws_ingest(ws: WebSocket, token: str = "", session_id: str = ""):
         if not token_ok(token) or not re.match(SESSION_ID_RE, session_id):
             await ws.close(code=4401)
+            return
+        if session_id not in manager.sessions and not admit_new_session():
+            await ws.close(code=4429)  # usage cap reached
             return
         await ws.accept()
         session = await manager.attach(session_id, ws)
