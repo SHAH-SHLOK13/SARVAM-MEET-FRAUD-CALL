@@ -3,7 +3,9 @@
 class ApiClient {
   constructor() {
     const params = new URLSearchParams(window.location.search);
-    this.token = params.get('token') || localStorage.getItem('cs_token') || 'dev-token';
+    // Hosted demo: preconfigured shared demo token, so evaluators can open the dashboard link as is.
+    const defaultToken = window.location.hostname.endsWith('onrender.com') ? 'RxGiUbLIoP5S8GsZf6AiVpDMVye3m9OjN8EJsE2VjMo=' : 'dev-token';
+    this.token = params.get('token') || localStorage.getItem('cs_token') || defaultToken;
     try {
       localStorage.setItem('cs_token', this.token);
     } catch {}

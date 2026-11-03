@@ -3,6 +3,19 @@
 Real-time fraud and digital-arrest call warnings for Google Meet on desktop Chrome.
 HackSplot 2026, PS1. Proof of concept.
 
+## For evaluators (no setup, no keys)
+
+- **Live dashboard:** https://callshield-3lph.onrender.com/dashboard/ (opens directly; free hosting may take
+  ~1 minute to wake up the first time).
+- **Extension** (already pointed at the hosted backend, nothing to configure):
+  1. Download this repo as ZIP and unzip it.
+  2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → pick the `extension/` folder.
+  3. Join a Google Meet call, click the CallShield icon → **Start monitoring this Meet tab**.
+  4. From a second device in the same Meet, say a scam line, e.g. *"Main Mumbai Police se bol raha hoon,
+     aap digital arrest mein hain, call cut mat karna, abhi do lakh transfer kariye"*. The warning
+     appears on Meet; the dashboard shows the transcript, risk, call summary and key-moment screenshots.
+- AI keys (Sarvam) live only on the server; nothing is needed on your side.
+
 ```text
 Meet tab ──► MV3 extension (offscreen capture) ──WS──► FastAPI backend ──► AI pipeline (Shlok)
   ▲  overlay / leave call                                │ evidence ledger → fusion → policy

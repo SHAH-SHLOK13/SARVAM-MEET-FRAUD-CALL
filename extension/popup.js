@@ -1,6 +1,9 @@
+// Preconfigured for the hosted demo backend so evaluators only need to load the extension.
+// The token is the shared demo token of that deployment (not an AI provider key: those stay on
+// the server). Rotate CALLSHIELD_TOKEN on Render after judging.
 const DEFAULTS = {
-  backendUrl: 'http://localhost:8000',
-  token: 'dev-token',
+  backendUrl: 'https://callshield-3lph.onrender.com',
+  token: 'RxGiUbLIoP5S8GsZf6AiVpDMVye3m9OjN8EJsE2VjMo=',
   micEnabled: false,
   autoDisconnect: false,
   closeTabFallback: false,
