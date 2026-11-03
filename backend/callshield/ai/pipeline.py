@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from ..adapter import _AWARENESS, _MOCK_RULES, Emit
+from ..adapter import _AWARENESS, _MOCK_RULES, Emit, mitigation_cues
 from ..contracts import (
     AudioChunk, ChatMessage, Evidence, Retraction, Utterance, VideoFrame, make_event, new_id,
 )
@@ -31,6 +31,8 @@ PRIOR_FINDINGS = 15
 COALESCE_S = 0.15
 ASR_FAIL_RAISE_AFTER_S = 3.0
 FALLBACK_QUALITY = 0.4
+MITIGATION_LINES = 4          # mitigation cues are matched over this many recent lines
+MITIGATION_WINDOW_MS = 15000  # ...of the same speaker, within this span
 
 # Frame selection for vision (see on_video). change_score is 0-1 from the extension.
 VISION_CHANGE = 0.04          # a new scene: something was held up, a screen share started
@@ -169,14 +171,18 @@ class LivePipeline:
         extra = [u for u in msg.links if u not in text]
         if extra:
             text += " " + " ".join(extra)
-        self._add_line(st, Line(event_id, msg.sender_role, "chat", text, msg.t_ms, msg.t_ms))
+        line = Line(event_id, msg.sender_role, "chat", text, msg.t_ms, msg.t_ms)
+        self._add_line(st, line)
+        await self._mitigation(st, line)
 
     async def on_text(self, session_id: str, event_id: str, utt: Utterance) -> None:
         st = self._s.get(session_id)
         if st is None:
             return
         self._raise_pending(st)
-        self._add_line(st, Line(event_id, utt.speaker_role, "speech", utt.text, utt.t_start_ms, utt.t_end_ms))
+        line = Line(event_id, utt.speaker_role, "speech", utt.text, utt.t_start_ms, utt.t_end_ms)
+        self._add_line(st, line)
+        await self._mitigation(st, line)
 
     async def end_session(self, session_id: str) -> None:
         st = self._s.pop(session_id, None)
@@ -231,8 +237,33 @@ class LivePipeline:
                             asr_quality=None, is_final=True)
             env = make_event(session_id, "utterance", "model", utt)
             await st.emit(env)
-            self._add_line(st, Line(env.event_id, role, "speech", text, t0, t1))
+            line = Line(env.event_id, role, "speech", text, t0, t1)
+            self._add_line(st, line)
+            await self._mitigation(st, line)
         return on_final
+
+    async def _mitigation(self, st: _SessionState, line: Line) -> None:
+        """Deterministic awareness / joke / test-call cues, emitted at once (no LLM wait) so
+        the fusion engine discounts earlier evidence before any auto-disconnect can fire.
+        Matched over this speaker's last few lines because ASR splits sentences."""
+        if line.role == "local":
+            return
+        window = [l for l in st.lines[-MITIGATION_LINES:]
+                  if l.role == line.role and l.source == line.source
+                  and line.t_end_ms - l.t_end_ms <= MITIGATION_WINDOW_MS]
+        before = mitigation_cues(" ".join(l.text for l in window[:-1]))
+        joined = " ".join(l.text for l in window)
+        for cat in mitigation_cues(joined):
+            if cat in before:
+                continue  # already reported from the earlier lines
+            ev = Evidence(
+                evidence_id=new_id("ev"), category=cat,
+                source_modality="chat" if line.source == "chat" else "speech",
+                t_start_ms=window[0].t_start_ms, t_end_ms=line.t_end_ms,
+                source_event_ids=[l.line_id for l in window], quoted_text_or_observation=joined,
+                quality=1.0, rule_refs=[],
+            )
+            await st.emit(make_event(st.session_id, "evidence", "model", ev))
 
     def _add_line(self, st: _SessionState, line: Line) -> None:
         st.lines.append(line)

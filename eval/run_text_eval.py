@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT / "backend"))
 
 from dotenv import load_dotenv  # noqa: E402
 
-from callshield.adapter import _AWARENESS, _MOCK_RULES  # noqa: E402
+from callshield.adapter import _AWARENESS, _MOCK_RULES, mitigation_cues  # noqa: E402
 from callshield.ai.detector import Analysis, Line, LLMDetector, Prior, backends_from_env  # noqa: E402
 from callshield.contracts import LEVEL_ORDER, Evidence  # noqa: E402
 from callshield.fusion import RiskEngine, load_risk_config  # noqa: E402
@@ -87,6 +87,16 @@ async def run_conversation(conv, cfg, detector, mode, sem):
                                 quoted_text_or_observation=quote, quality=q), line.role)
             prior.append(Prior(line.line_id, cat, quote))
             evidence_by_line.setdefault(line.line_id, []).append(eid)
+        if line.role != "local":  # same deterministic mitigation cues as the live pipeline
+            win = [l for l in lines[-4:] if l.role == line.role]
+            before = mitigation_cues(" ".join(l.text for l in win[:-1]))
+            for cat in mitigation_cues(" ".join(l.text for l in win)):
+                if cat not in before:
+                    engine.add(Evidence(evidence_id=f"{conv['id']}-{i}-{cat}", category=cat,
+                                        source_modality="speech", t_start_ms=t, t_end_ms=t,
+                                        source_event_ids=[line.line_id],
+                                        quoted_text_or_observation=text, quality=1.0), line.role)
+                    found.append((cat, text, 1.0))
         r = engine.assess(t)
         if LEVEL_ORDER[r.risk_level] > LEVEL_ORDER[peak]:
             peak = r.risk_level

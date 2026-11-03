@@ -14,7 +14,7 @@ Labels: **verified** (reproducible test passes), **implemented** (code written, 
 | 3 | Disconnect call | verified (manual), auto pending | Leave button click (icon `call_end` / aria-label) with verification; opt-in close-tab fallback. |
 | 3 | Switch off mobile | **simulated / not met** | Not possible from desktop Chrome. Stated as a limitation. |
 | 3 | Automated reporting to central server | verified (simulator) | Every event persisted; incident report at `/api/sessions/{id}/report`. Not filed with any authority. |
-| 3 | Freeze transactions during call | simulated, verified (simulator) | Mock bank: PENDING → HOLD/DECLINED on policy freeze, HMAC-signed risk attestation. |
+| 3 | Freeze transactions during call | **removed** | Out of scope for this build: the mock bank was taken out. |
 | 4 | Demo on at least one attack call | pending | Needs live Meet run + Shlok's pipeline. |
 | 5 | Accuracy, FP, FN, latency | dev-set only | `eval/run_text_eval.py`: rules baseline 62.5% acc / 50% FPR vs LLM 100% / 0% on the **dev set the prompt was tuned on** (optimistic). Audio replay: speech end → flag ≈ 1–3 s; Sarvam transcript ≈ 0.1 s after end of speech. Held-out set still needed. |
 
@@ -25,7 +25,9 @@ Labels: **verified** (reproducible test passes), **implemented** (code written, 
 | Contract v1.0, binary framing | verified (unit tests) |
 | Ingest WS, auth token, validation, per-modality bounded queues | verified (tests + simulator) |
 | Fusion engine (dedupe, per-category max, speaker factor, modality caps, weak-only cap, patterns) | verified (unit tests) |
-| Policy (bank hold at high; auto-disconnect gate; separated from scoring) | verified (unit tests) |
+| Policy (auto-disconnect gate incl. no-recent-mitigation; separated from scoring) | verified (unit tests) |
+| Mitigating context (awareness / joke / test call discounts earlier evidence) | verified (unit tests + replay of 3 real Meet calls) |
+| AI call summary (Sarvam) + key-moment screenshots in report and dashboard | verified (local end-to-end) |
 | Monitoring states (`ok/degraded/unavailable`, never "safe" when impaired) | verified (tests) |
 | Dashboard | verified (live Meet session, 2026-10-28) |
 | Extension tab audio capture + playback restore | verified on real Meet (2026-10-28) |

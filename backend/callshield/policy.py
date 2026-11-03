@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts import LEVEL_ORDER
 from .fusion import RiskConfig, RiskResult
 
 
@@ -26,14 +25,16 @@ class PolicyEngine:
         self.critical_since_ms: int | None = None
         self.auto_disconnect_issued = False
         self.auto_disconnect_issued_ms = 0
-        self.bank_hold_issued = False
 
     def gate(self, r: RiskResult, *, settings: dict, monitoring_state: str,
              inference_mode: str, now_ms: int) -> dict[str, bool]:
         ad = self.cfg.auto_disconnect
         sustained = (self.critical_since_ms is not None
                      and now_ms - self.critical_since_ms >= ad.sustain_ms)
+        hold_ms = self.cfg.mitigation.hold_s * 1000
         return {
+            # Someone just framed the call as awareness / a joke / a test: never hang up on that.
+            "no_recent_mitigation": r.last_mitigation_ms is None or now_ms - r.last_mitigation_ms > hold_ms,
             "user_opted_in": bool(settings.get("auto_disconnect")),
             "level_critical": r.risk_level == "critical",
             "sustained": sustained,
@@ -53,12 +54,6 @@ class PolicyEngine:
 
         actions: list[ActionRequest] = []
 
-        if (not self.bank_hold_issued
-                and LEVEL_ORDER[r.risk_level] >= LEVEL_ORDER[self.cfg.bank_hold_level]):
-            self.bank_hold_issued = True
-            actions.append(ActionRequest("bank_hold", "simulated",
-                                         {"reason": f"risk level {r.risk_level}", "simulated": True}))
-
         checks = self.gate(r, settings=settings, monitoring_state=monitoring_state,
                            inference_mode=inference_mode, now_ms=now_ms)
         window = self.cfg.auto_disconnect.cancel_window_ms
@@ -67,10 +62,13 @@ class PolicyEngine:
             self.auto_disconnect_issued_ms = now_ms
             actions.append(ActionRequest("auto_disconnect", "pending",
                                          {"cancel_window_ms": window, "gate": checks}))
-        elif (self.auto_disconnect_issued and r.risk_level != "critical"
+        elif (self.auto_disconnect_issued
+              and (r.risk_level != "critical" or not checks["no_recent_mitigation"])
               and now_ms - self.auto_disconnect_issued_ms < window):
-            # Later context lowered the risk (e.g. evidence retracted) inside the cancel window.
+            # Later context lowered the risk (evidence retracted, or awareness / joke / test-call
+            # context) inside the cancel window.
             self.auto_disconnect_issued = False
+            reason = "risk_revised" if checks["no_recent_mitigation"] else "mitigating_context"
             actions.append(ActionRequest("auto_disconnect", "cancelled",
-                                         {"reason": "risk_revised", "risk_level": r.risk_level}))
+                                         {"reason": reason, "risk_level": r.risk_level}))
         return checks, actions

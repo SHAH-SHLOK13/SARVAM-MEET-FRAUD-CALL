@@ -58,7 +58,10 @@ export class TranscriptComponent {
           const p = e.payload;
           const role = isChat ? (p.sender_role || 'unknown') : (p.speaker_role || 'unknown');
           const catsSet = flaggedMap.get(e.event_id);
-          const cats = catsSet ? Array.from(catsSet) : [];
+          const all = catsSet ? Array.from(catsSet) : [];
+          // mitigation_* = awareness / joke / test-call context that LOWERS risk: shown green.
+          const cats = all.filter(c => !c.startsWith('mitigation_'));
+          const calming = all.filter(c => c.startsWith('mitigation_')).map(c => c.replace('mitigation_', ''));
           const isFlagged = cats.length > 0;
 
           const roleClass = {
@@ -81,6 +84,7 @@ export class TranscriptComponent {
                 ${isChat && p.sender_label ? `<span class="sender-name">${esc(p.sender_label)}</span>` : ''}
                 <div class="flag-tags">
                   ${cats.map(c => `<span class="flag-pill">⚠ ${esc(c)}</span>`).join('')}
+                  ${calming.map(c => `<span class="flag-pill calm-pill" title="Lowers risk">✓ ${esc(c)}</span>`).join('')}
                 </div>
               </div>
 

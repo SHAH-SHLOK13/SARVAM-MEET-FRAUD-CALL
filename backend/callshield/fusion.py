@@ -26,6 +26,8 @@ class CategoryCfg(BaseModel):
     weight: float
     strength: Literal["weak", "normal", "strong"] = "normal"
     rules: list[str] = []
+    # "mitigate": awareness / joke / test-call context that discounts earlier evidence.
+    effect: Literal["raise", "mitigate"] = "raise"
 
 
 class PatternCfg(BaseModel):
@@ -46,6 +48,13 @@ class LevelsCfg(BaseModel):
     caution: int
     high: int
     critical: int
+
+
+class MitigationCfg(BaseModel):
+    lookback_s: float = 180
+    grace_s: float = 10
+    max_discount: float = 0.85
+    hold_s: float = 30
 
 
 class AutoDisconnectCfg(BaseModel):
@@ -69,7 +78,7 @@ class RiskConfig(BaseModel):
     patterns: list[PatternCfg]
     levels: LevelsCfg
     auto_disconnect: AutoDisconnectCfg
-    bank_hold_level: Literal["caution", "high", "critical"] = "high"
+    mitigation: MitigationCfg = MitigationCfg()
 
     @model_validator(mode="after")
     def _check_refs(self):
@@ -78,6 +87,8 @@ class RiskConfig(BaseModel):
                 for c in g:
                     if c not in self.categories:
                         raise ValueError(f"pattern {p.name} references unknown category {c}")
+                    if self.categories[c].effect != "raise":
+                        raise ValueError(f"pattern {p.name} uses mitigating category {c}")
         return self
 
 
@@ -105,6 +116,8 @@ class RiskResult:
     has_strong_category: bool
     latest_text_evidence_end_ms: int | None = None
     contributions: dict[str, float] = field(default_factory=dict)
+    last_mitigation_ms: int | None = None   # end time of the newest mitigating cue
+    raw_risk_index: int = 0                  # what the index would be without mitigation
 
 
 _WS = re.compile(r"\s+")
@@ -168,22 +181,51 @@ class RiskEngine:
             return "caution"
         return "normal"
 
+    def _cue_strength(self, e: LedgerEntry) -> float:
+        """mu for a mitigating cue: weight * quality * speaker factor (no time decay: it
+        reframes what was said before it, however long ago within the lookback)."""
+        cat = self.cfg.categories[e.evidence.category]
+        quality = 1.0 if e.evidence.quality is None else e.evidence.quality
+        return min(1.0, cat.weight * quality * self.cfg.speaker_factor.get(e.speaker_role, 0.0))
+
+    def _discount(self, t_end_ms: int, cues: list[tuple[int, float]]) -> float:
+        """D in [0, max_discount]: noisy-OR of the cues that frame this evidence."""
+        m = self.cfg.mitigation
+        keep = 1.0
+        for t_m, mu in cues:
+            if -m.grace_s * 1000 <= t_m - t_end_ms <= m.lookback_s * 1000:
+                keep *= 1.0 - mu
+        return min(m.max_discount, 1.0 - keep)
+
     def assess(self, now_ms: int) -> RiskResult:
         cfg = self.cfg
-        # One contribution per category: repeated mentions never stack.
+        cue_entries = [e for e in self.entries.values()
+                       if cfg.categories[e.evidence.category].effect == "mitigate"]
+        cues = [(e.evidence.t_end_ms, mu) for e in cue_entries if (mu := self._cue_strength(e)) > 0]
+        # One contribution per category: repeated mentions never stack. Each mention is first
+        # discounted by the mitigating cues around it, so the strongest *undiscounted* one wins.
         best: dict[str, tuple[float, LedgerEntry]] = {}
+        raw_best: dict[str, float] = {}
         for e in self.entries.values():
-            c = self._contribution(e, now_ms)
+            if cfg.categories[e.evidence.category].effect == "mitigate":
+                continue
+            raw = self._contribution(e, now_ms)
+            c = raw * (1.0 - self._discount(e.evidence.t_end_ms, cues))
+            k = e.evidence.category
+            raw_best[k] = max(raw_best.get(k, 0.0), raw)
             if c < self.MIN_CONTRIBUTION:
                 continue
-            cur = best.get(e.evidence.category)
+            cur = best.get(k)
             if cur is None or c > cur[0]:
-                best[e.evidence.category] = (c, e)
+                best[k] = (c, e)
 
         text = {k: v for k, v in best.items() if cfg.categories[k].modality == "text"}
         other = {k: v for k, v in best.items() if cfg.categories[k].modality != "text"}
 
         text_risk = self._combine([v for v, _ in text.values()])
+        raw_text_risk = self._combine([v for k, v in raw_best.items() if cfg.categories[k].modality == "text"])
+        # Share of the text evidence still standing after mitigation (1.0 when none applies).
+        credibility = text_risk / raw_text_risk if raw_text_risk > 0 else 1.0
 
         modifier = 0.0
         modifiers_applied = text_risk >= cfg.modality_caps.require_text_risk
@@ -198,14 +240,17 @@ class RiskEngine:
             if hits >= p.min_groups:
                 matched.append(p)
 
-        risk = text_risk + modifier + sum(p.bonus for p in matched)
-        weak_only = bool(text) and all(cfg.categories[k].strength == "weak" for k in text)
-        if weak_only:
-            risk = min(risk, cfg.weak_only_cap)
-        if len(text) <= 1:
-            risk = min(risk, cfg.single_category_cap)
-        risk = max(0.0, min(1.0, risk))
+        def capped(r: float) -> float:
+            if bool(text) and all(cfg.categories[k].strength == "weak" for k in text):
+                r = min(r, cfg.weak_only_cap)
+            if len(text) <= 1:
+                r = min(r, cfg.single_category_cap)
+            return max(0.0, min(1.0, r))
+
+        bonus = sum(p.bonus for p in matched)
+        risk = capped(text_risk + modifier * credibility + bonus * credibility)
         risk_index = int(round(risk * 100))
+        raw_risk_index = int(round(capped(raw_text_risk + modifier + bonus) * 100))
 
         has_strong = any(cfg.categories[k].strength == "strong" for k in text)
         n = len(text)
@@ -232,10 +277,16 @@ class RiskEngine:
             cat = cfg.categories[k]
             note = "" if modifiers_applied else " (not counted: no corroborating speech/chat)"
             reasons.append(f"Supporting {cat.modality} cue: {cat.label}{note}")
+        if cues and raw_risk_index > risk_index:
+            newest = max(cue_entries, key=lambda e: e.evidence.t_end_ms)
+            quote = newest.evidence.quoted_text_or_observation[:140]
+            reasons.insert(0, f"Mitigating context lowered risk {raw_risk_index} → {risk_index}: "
+                              f"{cfg.categories[newest.evidence.category].label}: “{quote}”")
 
         contributing = [e.evidence.evidence_id for _, e in text.values()]
         if modifiers_applied:
             contributing += [e.evidence.evidence_id for _, e in other.values()]
+        contributing += [e.evidence.evidence_id for e in cue_entries]
 
         latest_text_end = max((e.evidence.t_end_ms for _, e in text.values()), default=None)
 
@@ -251,4 +302,6 @@ class RiskEngine:
             has_strong_category=has_strong,
             latest_text_evidence_end_ms=latest_text_end,
             contributions={k: round(v, 4) for k, (v, _) in best.items()},
+            last_mitigation_ms=max((t for t, _ in cues), default=None),
+            raw_risk_index=raw_risk_index,
         )

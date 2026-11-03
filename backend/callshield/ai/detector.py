@@ -138,6 +138,11 @@ CANDIDATE = re.compile(
 )
 
 
+def substantive(text: str) -> bool:
+    """At least two words of two or more characters (Devanagari matras count as characters)."""
+    return sum(1 for w in text.split() if len(w.strip(".,!?।|-…\"'“”()")) >= 2) >= 2
+
+
 def is_candidate(text: str) -> bool:
     return bool(CANDIDATE.search(text))
 
@@ -435,6 +440,11 @@ class LLMDetector:
                 continue
             act = item.get("speech_act")
             fs = item.get("findings") or []
+            if fs and not substantive(line.text):
+                # ASR fragments ("आप।", "ए", "अरे!") carry no behaviour of their own; the
+                # model sometimes pins a neighbour line's category on them.
+                self.stats.drop("fragment_line")
+                continue
             if act != "direct":
                 if fs:
                     self.stats.drop(f"speech_act_{act}")

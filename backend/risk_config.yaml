@@ -48,6 +48,19 @@ categories:
   visual_payment_instruction: {label: "Payment details shown on screen",       modality: video, weight: 0.08, strength: weak, rules: [R10]}
   # ---- acoustic modifiers ----
   tone_intimidation:          {label: "Intimidating / aggressive tone",        modality: tone,  weight: 0.05, strength: weak, rules: [R7]}
+  # ---- mitigating context (effect: mitigate) ----
+  # Detected deterministically from the transcript (backend/callshield/adapter.py), not by the LLM.
+  # weight = how much of the EARLIER evidence one such cue discounts (see `mitigation` below).
+  mitigation_awareness:  {label: "Framed as a warning ('...to wo fraud hai', '1930 pe report karo')", modality: text, weight: 0.60, effect: mitigate}
+  mitigation_disclaimer: {label: "Speaker says it was a joke / prank / test call",                 modality: text, weight: 0.60, effect: mitigate}
+  mitigation_caution:    {label: "Generic safety advice ('savdhan rahein', 'stay safe')",           modality: text, weight: 0.35, effect: mitigate}
+
+# A mitigating cue at time t_m discounts evidence e that ended in [t_m - lookback_s, t_m + grace_s]:
+#   D_e = min(max_discount, 1 - prod(1 - mu_m))      mu_m = cue weight * quality * speaker_factor
+#   contribution_e *= (1 - D_e);  pattern bonuses scale by (discounted text risk / raw text risk)
+# Evidence after t_m + grace_s counts in full: a disclaimer cannot excuse later demands.
+# Auto-disconnect is not requested within hold_s of a cue (and a pending one is cancelled).
+mitigation: {lookback_s: 180, grace_s: 10, max_discount: 0.85, hold_s: 30}
 
 # Video/tone only add risk once text risk reaches require_text_risk, and never more than the cap.
 modality_caps: {video: 0.10, tone: 0.05, require_text_risk: 0.25}
@@ -89,4 +102,3 @@ auto_disconnect:
   cancel_window_ms: 8000
   allow_on_mock: false
 
-bank_hold_level: high

@@ -207,17 +207,14 @@
   }
 
   // ---------- Meet chat ingestion ----------
-  // Meet only renders chat messages while the chat panel is open, so we (1) open the panel
-  // when monitoring starts and nudge the user if it gets closed, and (2) also read Meet's
-  // aria-live announcement regions as a best-effort fallback. Both paths share one dedupe.
+  // Meet only renders chat messages while the chat panel is open, so we open the panel when
+  // monitoring starts and nudge the user if it gets closed. (Meet's aria-live announcement
+  // regions are NOT read: they are mostly Meet's own UI notices, e.g. "You've left the meeting",
+  // which polluted the transcript and the score.)
 
   const CHAT_LABEL = /chat with everyone|^chat$|in-call messages|चैट/i;
-  // Whole-string match only, so a scammer's message that merely contains "10 seconds left"
-  // is never suppressed. ponytail: English Meet UI notices only; extend for a Hindi Meet UI.
-  const MEET_NOTICE = /^(\d+ seconds? left\.?|returning to home screen in \d+ seconds?\.?|[^:,.!?\n]{1,40} (joined|has left|left the call|is presenting|stopped presenting|raised (a|their) hand)\.?|you('re| are) (muted|presenting)\.?)$/i;
   const seenChat = new Map(); // message id -> text
-  const recentTexts = []; // { norm, t } across both paths
-  const seenLive = new WeakMap(); // aria-live element -> last text
+  const recentTexts = []; // { norm, t }
   let chatTimer = null;
   let chatCheckTimer = null;
 
@@ -292,18 +289,6 @@
       if (!edited && isDuplicateText(text)) continue;
       const links = [...el.querySelectorAll('a[href]')].map((a) => a.href).slice(0, 10);
       sendChat(edited ? `${id}#${seenChat.size}` : id, text, links, 'chat_panel');
-    }
-    // aria-live is only a fallback for a closed chat panel: it also carries Meet's own system
-    // notices ("Returning to home screen in 60 seconds", "X joined"), which are not messages.
-    if (chatPanelOpen() === true) return;
-    for (const el of document.querySelectorAll('[aria-live]')) {
-      if (host.contains(el)) continue;
-      const text = (el.innerText || '').trim();
-      if (!text || text.length < 3 || seenLive.get(el) === text || MEET_NOTICE.test(text)) continue;
-      seenLive.set(el, text);
-      if (isDuplicateText(text)) continue;
-      const links = [...el.querySelectorAll('a[href]')].map((a) => a.href).slice(0, 10);
-      sendChat(`live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, text, links, 'meet_announcement');
     }
   }
 

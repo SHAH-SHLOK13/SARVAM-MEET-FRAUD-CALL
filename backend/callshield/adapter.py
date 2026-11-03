@@ -74,6 +74,33 @@ _MOCK_RULES: list[tuple[str, re.Pattern]] = [
 ]
 _AWARENESS = re.compile(r"\b(scams?|fraud|dhoka|savdhan|beware|awareness)\b|धोखा|सावधान|स्कैम", re.I)
 
+# ---- Mitigating context (deterministic, used by every pipeline) ----
+# Matched over the speaker's last few ASR lines joined, because streaming ASR splits
+# "ye sab agar koi aapko bole / to wo fraud hai" across lines.
+_FRAUD = r"(?:fraud|froud|scams?|फ्रॉड|फ्रोड|फ़्रॉड|स्कैम|धोखा|धोखाधड़ी|ठगी|thagi|dhokha)"
+_JOKE = r"(?:मज़ाक|मजाक|मज़ाक़|mazaa?k|majaa?k|kidding|joking|prank|प्रैंक|test\s*call|टेस्ट\s*कॉल|demo\s*call|डेमो\s*कॉल)"
+_NEG = r"(?:नहीं|नही|nahi|nahin|nhi|not|मत|mat)"
+# "ye fraud nahi hai", "main mazaak nahi kar raha", "mazaak mat samjho": scammer talk, never a cue.
+_NEGATED = re.compile(rf"(?:{_FRAUD}|{_JOKE})\s*(?:\S+\s+)?{_NEG}(?!\w)|(?<!\w){_NEG}\s+(?:a\s+)?(?:{_FRAUD}|{_JOKE})", re.I)
+MITIGATION_RULES: list[tuple[str, re.Pattern]] = [
+    ("mitigation_awareness", re.compile(
+        rf"(?:to|toh|तो)\s+(?:(?:wo|woh|vo|वो|वह|ye|yeh|यह|ये)\s+)?{_FRAUD}"         # "...to wo fraud hai"
+        rf"|{_FRAUD}\s*(?:करने\s*की\s*|karne\s*ki\s*)?(?:साज़िश|साजिश|कोशिश|sazish|koshish)"
+        r"|(?:otp|ओटीपी|pin|पिन|cvv|password|पासवर्ड).{0,40}(?:किसी\s*को|kisi\s*ko|anyone).{0,20}(?:मत|mat|na|ना|नहीं|nahi|never)"
+        r"|(?:bank|बैंक|police|पुलिस).{0,30}(?:कभी|kabhi|never).{0,30}(?:नहीं|nahi|mat|मत)"
+        r"|1930|cybercrime\.gov|साइबर\s*क्राइम\s*(?:पर|पे|में)\s*(?:report|रिपोर्ट|शिकायत)", re.I)),
+    ("mitigation_disclaimer", re.compile(_JOKE, re.I)),
+    ("mitigation_caution", re.compile(
+        r"सावधान|savdhaa?n|सतर्क|satark|सुरक्षित\s*रह|surakshit\s*rah|stay\s+safe|be\s+careful|beware|जागरूक|jagruk|awareness", re.I)),
+]
+
+
+def mitigation_cues(text: str) -> list[str]:
+    """Mitigating-context categories present in `text` (empty if the cue is negated)."""
+    if _NEGATED.search(text):
+        return []
+    return [cat for cat, rx in MITIGATION_RULES if rx.search(text)]
+
 
 class MockPipeline:
     name = "mock-keyword-placeholder"
@@ -109,7 +136,14 @@ class MockPipeline:
         if not emit:
             return
         quality = 0.3 if _AWARENESS.search(text) else 0.8
-        for category, rx in _MOCK_RULES:
+        rules = [(c, None) for c in mitigation_cues(text)] + _MOCK_RULES
+        for category, rx in rules:
+            if rx is None:  # mitigating cue, already matched
+                await emit(make_event(session_id, "evidence", "model", Evidence(
+                    evidence_id=new_id("ev"), category=category, source_modality=modality,
+                    t_start_ms=t0, t_end_ms=t1, source_event_ids=refs,
+                    quoted_text_or_observation=text.strip(), quality=1.0, is_mock=True)))
+                continue
             m = rx.search(text)
             if not m:
                 continue

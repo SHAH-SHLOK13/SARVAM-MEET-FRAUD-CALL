@@ -1,5 +1,6 @@
 // CallShield Video Analysis Component
-// Displays the latest frame examined by the Gemini vision model (documents, uniforms, emblems)
+// Latest frame examined by the Sarvam vision model (documents, uniforms, emblems), plus the
+// screenshots the backend kept at key moments (risk rose, chat flagged, document shown).
 
 import { esc, fmtTime } from '../formatters.js';
 
@@ -10,6 +11,7 @@ export class VisionComponent {
     this.sessionId = null;
     this.lastVisionEvent = null;
     this.pollTimer = null;
+    this.frameCount = -1;
     this.render();
   }
 
@@ -26,6 +28,7 @@ export class VisionComponent {
         <img id="visionImg" alt="Last analysed video frame" class="hidden" />
         <div id="visionInfo" class="muted text-muted">No frame analysed yet.</div>
       </div>
+      <div id="keyFrames" class="mt-4"></div>
     `;
   }
 
@@ -33,6 +36,9 @@ export class VisionComponent {
     if (this.sessionId === sessionId) return;
     this.sessionId = sessionId;
     this.lastVisionEvent = null;
+    this.frameCount = -1;
+    const kf = document.getElementById('keyFrames');
+    if (kf) kf.innerHTML = '';
     const img = document.getElementById('visionImg');
     const info = document.getElementById('visionInfo');
     if (img) {
@@ -64,8 +70,30 @@ export class VisionComponent {
     }
   }
 
+  async refreshKeyFrames() {
+    const el = document.getElementById('keyFrames');
+    if (!el || !this.sessionId) return;
+    let frames;
+    try {
+      frames = await this.api.getFrames(this.sessionId);
+    } catch {
+      return;
+    }
+    if (frames.length === this.frameCount) return;
+    this.frameCount = frames.length;
+    el.innerHTML = `
+      <div class="panel-title-wrap mb-2"><b>Key moments</b>
+        <span class="muted small text-muted text-xs">(screenshots taken when risk rose to HIGH/CRITICAL, a chat was flagged, or a document was shown)</span></div>
+      ${frames.length ? `<div class="keyframe-grid">${frames.slice().reverse().map(f => `
+        <a class="keyframe" href="${this.api.frameUrl(this.sessionId, f.frame_id)}" target="_blank" rel="noopener">
+          <img src="${this.api.frameUrl(this.sessionId, f.frame_id)}" alt="${esc(f.reason)}" loading="lazy" />
+          <div class="keyframe-cap"><code>${fmtTime(f.t_ms)}</code> · risk ${esc(f.risk_index ?? '–')}<br>${esc(f.reason)}</div>
+        </a>`).join('')}</div>` : '<div class="muted text-muted small">None yet.</div>'}`;
+  }
+
   async refresh() {
     if (!this.sessionId) return;
+    this.refreshKeyFrames();
     const img = document.getElementById('visionImg');
     const info = document.getElementById('visionInfo');
     if (!img || !info) return;

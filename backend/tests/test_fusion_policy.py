@@ -103,6 +103,89 @@ def test_auto_disconnect_blocked_when_degraded_or_mock(cfg):
     assert "auto_disconnect" not in _run_policy(cfg, r, {"auto_disconnect": True}, mode="mock")
 
 
-def test_bank_hold_once_at_high(cfg):
-    r = _critical_result(cfg)
-    assert _run_policy(cfg, r, {}).count("bank_hold") == 1
+# ---------- mitigating context (awareness / joke / test call) ----------
+
+def _scam(eng, t=T0):
+    eng.add(ev(1, "authority_claim", "Delhi Police se bol rahe hain", t=t), "remote")
+    eng.add(ev(2, "digital_arrest_claim", "aap digital arrest mein hain", t=t + 1000), "remote")
+    eng.add(ev(3, "payment_demand", "do lakh transfer kariye", t=t + 2000), "remote")
+    eng.add(ev(4, "credential_request", "OTP bhejiye", t=t + 3000), "remote")
+
+
+def test_awareness_cue_lowers_earlier_risk(cfg):
+    eng = RiskEngine(cfg)
+    _scam(eng)
+    before = eng.assess(T0 + 4000)
+    assert before.risk_level == "critical"
+    eng.add(ev(9, "mitigation_awareness", "ye sab koi bole to wo fraud hai", t=T0 + 5000, quality=1.0), "remote")
+    after = eng.assess(T0 + 5000)
+    assert after.risk_index < before.risk_index - 30 and after.risk_level != "critical"
+    assert after.raw_risk_index == before.risk_index
+    assert after.last_mitigation_ms == T0 + 5000
+    assert "Mitigating context" in after.reasons[0]
+
+
+def test_demands_after_a_disclaimer_count_in_full(cfg):
+    eng = RiskEngine(cfg)
+    eng.add(ev(9, "mitigation_disclaimer", "mazaak kar raha hoon", t=T0, quality=1.0), "remote")
+    _scam(eng, t=T0 + 20_000)  # beyond grace_s: a disclaimer cannot excuse what comes next
+    r = eng.assess(T0 + 24_000)
+    assert r.risk_level == "critical" and r.risk_index == r.raw_risk_index
+
+
+def test_discount_is_capped_and_local_cues_do_nothing(cfg):
+    eng = RiskEngine(cfg)
+    _scam(eng)
+    eng.add(ev(8, "mitigation_disclaimer", "mazaak tha", t=T0 + 5000, quality=1.0), "local")
+    assert eng.assess(T0 + 5000).risk_level == "critical"  # the protected user can't excuse the caller
+    for i in range(10, 16):
+        eng.add(ev(i, "mitigation_awareness", f"to wo fraud hai {i}", t=T0 + 5000 + i, quality=1.0), "remote")
+    assert eng.assess(T0 + 6000).risk_index > 0  # max_discount: evidence never vanishes entirely
+
+
+def test_mitigation_blocks_and_cancels_auto_disconnect(cfg):
+    eng = RiskEngine(cfg)
+    _scam(eng)
+    eng.add(ev(5, "video_custody", "call cut mat karna", t=T0 + 3500), "remote")
+    pol = PolicyEngine(cfg)
+    settings = {"auto_disconnect": True}
+    t = T0 + 4000
+    pol.decide(eng.assess(t), settings=settings, monitoring_state="ok", inference_mode="live", now_ms=t)
+    t += cfg.auto_disconnect.sustain_ms
+    _, acts = pol.decide(eng.assess(t), settings=settings, monitoring_state="ok", inference_mode="live", now_ms=t)
+    assert [a.status for a in acts if a.action_type == "auto_disconnect"] == ["pending"]
+    eng.add(ev(9, "mitigation_disclaimer", "ye ek test call tha", t=t + 1000, quality=1.0), "remote")
+    gate, acts = pol.decide(eng.assess(t + 1000), settings=settings, monitoring_state="ok",
+                            inference_mode="live", now_ms=t + 1000)
+    assert not gate["no_recent_mitigation"]
+    assert [(a.status, a.details["reason"]) for a in acts if a.action_type == "auto_disconnect"] == [
+        ("cancelled", "mitigating_context")]
+
+
+@pytest.mark.parametrize("text,cats", [
+    ("जी ये सब अगर कोई आपको बोले। तो वो fraud है।", ["mitigation_awareness"]),
+    ("ye scam karne ki koshish hai", ["mitigation_awareness"]),
+    ("OTP kisi ko mat batana", ["mitigation_awareness"]),
+    ("बैंक कभी OTP नहीं मांगता", ["mitigation_awareness"]),
+    ("मज़ाक कर रहा हूं भाई", ["mitigation_disclaimer"]),
+    ("ये एक test call था", ["mitigation_disclaimer"]),
+    ("आप सावधान रहें सुरक्षित रहें", ["mitigation_caution"]),
+    # scammer talk: negated / reassuring, never a cue
+    ("ओ fraud नहीं है बेटे", []),
+    ("ye scam nahi hai, main asli police hoon", []),
+    ("मैं मज़ाक नहीं कर रहा", []),
+    ("isko mazaak mat samjho", []),
+    ("aapke against warrant nikla hai", []),
+])
+def test_mitigation_cue_rules(text, cats):
+    from callshield.adapter import mitigation_cues
+    assert mitigation_cues(text) == cats
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("आप।", False), ("ए", False), ("अरे!", False), ("ओ भाई ओ।", False), ("Drugs.", False),
+    ("OTP भेजिए।", True), ("FIR हो चुकी है।", True), ("समझे आप?", True),
+])
+def test_fragment_lines(text, ok):
+    from callshield.ai.detector import substantive
+    assert substantive(text) is ok

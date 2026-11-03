@@ -35,6 +35,7 @@ export class RiskComponent {
       sustained: 'Critical Risk Sustained Duration Met',
       corroborated: 'Corroborated by ≥3 Suspicious Behaviours',
       strong_category: 'Includes Highest-Class Threat Signal',
+      no_recent_mitigation: 'No Recent Awareness / Joke / Test-Call Context',
       monitoring_ok: 'Monitoring Pipeline Healthy (Unimpaired)',
       live_inference: 'Live Inference (Non-Mock Detector)',
     };

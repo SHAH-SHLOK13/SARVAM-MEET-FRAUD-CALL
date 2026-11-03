@@ -8,13 +8,13 @@ Meet tab ──► MV3 extension (offscreen capture) ──WS──► FastAPI b
   ▲  overlay / leave call                                │ evidence ledger → fusion → policy
   └──────────── assessments + action requests ◄──────────┤
                                                          ├──► dashboard (/dashboard)
-                                                         └──► mock bank + incident report
+                                                         └──► incident report: AI call summary + key-moment screenshots
 ```
 
 | Folder | What |
 |---|---|
 | `extension/` | Manifest V3 extension: tab audio/video capture, optional mic, Meet chat ingest, overlay, leave call |
-| `backend/` | FastAPI: ingest, sessions, AI adapter, fusion + policy, SQLite, mock bank, reports |
+| `backend/` | FastAPI: ingest, sessions, AI adapter, fusion + policy, SQLite, call summaries, key-frame screenshots, reports |
 | `frontend/` | Dashboard (static, served by the backend at `/dashboard/`) |
 | `integration_tests/` | `simulate_call.py`: plays the extension's role without Chrome |
 | `docs/` | Contract, limitations, deliverable status |
@@ -43,7 +43,6 @@ Environment variables:
 | `CALLSHIELD_PIPELINE` | `mock` | `module:Class` of the AI pipeline (see `backend/callshield/adapter.py`) |
 | `CALLSHIELD_RISK_CONFIG` | `backend/risk_config.yaml` | Weights / thresholds (Shlok owns the values) |
 | `CALLSHIELD_DB` | `callshield.db` | SQLite file |
-| `CALLSHIELD_ATTEST_SECRET` | random per run | HMAC key for simulated bank risk attestations |
 | `SARVAM_API_KEY` | – | **The only key needed.** Streaming Hinglish ASR (saaras:v4), the fraud detector LLM and video-frame analysis |
 | `CALLSHIELD_LLM_BACKENDS` | `sarvam:sarvam-105b,sarvam:gemma4` | Failover order (`provider:model`). `groq:`/`gemini:` entries still work if `GROQ_API_KEY`/`GEMINI_API_KEY` are set |
 | `CALLSHIELD_LLM_EFFORT` | `low` | `reasoning_effort` for the detector (reasoning tokens are billed as output) |
@@ -67,6 +66,22 @@ backend\.venv\Scripts\python integration_tests\simulate_call.py --script benign
 Auto-disconnect is **off by default**. It needs the popup checkbox *and* the backend policy gate
 (critical, sustained, ≥3 corroborating behaviours incl. a strongest-class one, healthy monitoring,
 non-mock inference), then an 8 s visible cancel window.
+
+## How the risk score works
+
+Deterministic, reproducible (`backend/callshield/fusion.py`, values in `backend/risk_config.yaml`):
+
+1. Each flagged behaviour contributes `weight × quality × speaker_factor × decay(age)`; one per category.
+2. **Mitigating context** (rule-based, instant): when the other party frames what they said as a warning
+   ("…to wo fraud hai", "1930 pe report karo"), a joke ("mazaak kar raha hoon") or a test call, every
+   flag from the preceding 3 minutes is discounted: `D = min(0.85, 1 − Π(1 − μ_cue))`. Flags raised
+   *after* the cue count in full, and negations ("ye fraud nahi hai", "mazaak nahi hai") never count.
+3. Text risk = noisy-OR of the contributions; pattern bonuses scale with the share of evidence left.
+4. Auto-disconnect needs critical risk sustained 6 s, ≥3 behaviours incl. a strong one, live AI,
+   healthy monitoring, user opt-in, and **no mitigating cue in the last 30 s**; a pending countdown is
+   cancelled when one arrives.
+
+Dev-set result (24 scripted conversations, Sarvam `sarvam-105b`): 12/12 scams caught, 0/12 false alarms.
 
 ## Status
 

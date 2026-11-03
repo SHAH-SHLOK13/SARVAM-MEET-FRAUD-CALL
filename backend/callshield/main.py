@@ -19,10 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .adapter import AIPipeline, MockPipeline, load_pipeline
-from .bank import MockBank
 from .contracts import SCHEMA_VERSION
 from .fusion import load_risk_config
 from .hub import Hub
+from .ai.summary import summarize
 from .report import build_report, report_markdown
 from .session import Deps, SessionManager
 from .store import Store
@@ -37,12 +37,6 @@ TICK_S = 2.0
 class InjectText(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     speaker_role: str = Field(default="remote", pattern="^(remote|local|unknown)$")
-
-
-class TransferIn(BaseModel):
-    session_id: str = Field(pattern=SESSION_ID_RE)
-    amount: float = Field(gt=0, le=10_000_000)
-    payee: str = Field(min_length=1, max_length=120)
 
 
 def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = None,
@@ -61,15 +55,13 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
     log.info("AI pipeline: %s (mock=%s)", pipeline.name, pipeline.is_mock)
     store = Store(db_path or os.environ.get("CALLSHIELD_DB", "callshield.db"))
     hub = Hub()
-    bank = MockBank(store, os.environ.get("CALLSHIELD_ATTEST_SECRET"))
-    manager = SessionManager(Deps(cfg=cfg, store=store, hub=hub, bank=bank, pipeline=pipeline))
+    manager = SessionManager(Deps(cfg=cfg, store=store, hub=hub, pipeline=pipeline))
 
     async def ticker():
         while True:
             await asyncio.sleep(tick_s)
             try:
                 await manager.tick()
-                bank.settle()
             except Exception:  # noqa: BLE001
                 log.exception("tick failed")
 
@@ -86,7 +78,6 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
     app = FastAPI(title="CallShield", lifespan=lifespan)
     app.state.manager = manager
     app.state.store = store
-    app.state.bank = bank
     app.state.cfg = cfg
 
     def token_ok(t: str | None) -> bool:
@@ -172,8 +163,7 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
                                            "action", "control"], limit=2000)
         if not events and s is None:
             raise HTTPException(404, "unknown session")
-        return {"session_id": session_id, "health": s.health() if s else None, "events": events,
-                "transfers": bank.list(session_id)}
+        return {"session_id": session_id, "health": s.health() if s else None, "events": events}
 
     @app.get("/api/sessions/{session_id}/report", dependencies=auth)
     def session_report(session_id: str, format: str = "json"):
@@ -181,7 +171,9 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
         if not events:
             raise HTTPException(404, "unknown session")
         s = manager.sessions.get(session_id)
-        rep = build_report(session_id, events, s.health() if s else None, bank.list(session_id))
+        cached = store.summary(session_id)
+        rep = build_report(session_id, events, s.health() if s else None, store.frames(session_id),
+                           cached[1] if cached else None)
         if format == "md":
             return PlainTextResponse(report_markdown(rep), media_type="text/markdown")
         return rep
@@ -205,6 +197,36 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
             raise HTTPException(404, "no active session")
         return s.inject_text(body.text, body.speaker_role).model_dump()
 
+    @app.post("/api/sessions/{session_id}/summary", dependencies=auth)
+    async def session_summary(session_id: str) -> dict[str, Any]:
+        """AI-written brief summary of the call (Sarvam LLM), cached until new events arrive."""
+        events = store.events(session_id, ["utterance", "chat_message", "evidence", "retraction",
+                                           "assessment", "action"], limit=3000)
+        if not events:
+            raise HTTPException(404, "unknown session")
+        cached = store.summary(session_id)
+        if cached and cached[0] == len(events):
+            return cached[1]
+        try:
+            body = await summarize(events, store.frames(session_id))
+        except Exception as e:  # noqa: BLE001 - surfaced to the dashboard
+            raise HTTPException(503, f"summary unavailable: {e}")
+        store.save_summary(session_id, len(events), body)
+        return body
+
+    @app.get("/api/sessions/{session_id}/frames", dependencies=auth)
+    def session_frames(session_id: str) -> list[dict[str, Any]]:
+        """Screenshots taken when risk rose to high/critical, a chat message was flagged, or a
+        document / uniform was seen on video."""
+        return store.frames(session_id)
+
+    @app.get("/api/sessions/{session_id}/frames/{frame_id}.jpg", dependencies=auth)
+    def session_frame_jpg(session_id: str, frame_id: str):
+        jpeg = store.frame_jpeg(session_id, frame_id)
+        if jpeg is None:
+            raise HTTPException(404, "unknown frame")
+        return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
     def _latest_frame(session_id: str) -> dict | None:
         getter = getattr(pipeline, "latest_frame", None)
         return getter(session_id) if getter else None
@@ -223,30 +245,6 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
         if not f:
             raise HTTPException(404, "no analysed frame")
         return Response(content=f["jpeg"], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
-
-    @app.get("/api/bank/transfers", dependencies=auth)
-    def bank_list(session_id: str | None = None):
-        return bank.list(session_id)
-
-    @app.post("/api/bank/transfers", dependencies=auth)
-    def bank_create(body: TransferIn):
-        s = manager.sessions.get(body.session_id)
-        level = s.latest.risk_level if s and s.latest else None
-        return bank.create_transfer(body.session_id, body.amount, body.payee, level)
-
-    @app.post("/api/bank/transfers/{transfer_id}/release", dependencies=auth)
-    def bank_release(transfer_id: str):
-        t = bank.release(transfer_id)
-        if t is None:
-            raise HTTPException(404, "unknown transfer")
-        return t
-
-    @app.post("/api/bank/verify", dependencies=auth)
-    def bank_verify(attestation: dict[str, Any]):
-        try:
-            return {"valid": bank.verify(attestation)}
-        except (KeyError, TypeError):
-            raise HTTPException(400, "malformed attestation")
 
     if FRONTEND_DIR.is_dir():
         app.mount("/dashboard", StaticFiles(directory=FRONTEND_DIR, html=True), name="dashboard")

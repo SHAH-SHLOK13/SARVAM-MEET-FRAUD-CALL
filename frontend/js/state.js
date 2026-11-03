@@ -7,7 +7,6 @@ export class StateStore {
     this.activeSession = {
       events: [],
       health: null,
-      transfers: [],
       retractions: new Map(), // evidence_id -> reason
       flaggedEvents: new Map(), // source_event_id -> Set of categories
     };
@@ -75,7 +74,6 @@ export class StateStore {
     this.activeSession = {
       events: [],
       health: detailData.health,
-      transfers: detailData.transfers || [],
       retractions: new Map(),
       flaggedEvents: new Map(),
     };
@@ -146,10 +144,6 @@ export class StateStore {
     }
   }
 
-  setTransfers(transfers) {
-    this.activeSession.transfers = transfers || [];
-    this.notify('transfers_updated', this.activeSession.transfers);
-  }
 
   getLatestAssessment() {
     const events = this.activeSession.events;

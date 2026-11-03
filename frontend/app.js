@@ -6,7 +6,6 @@ import { DashboardWs } from './js/ws.js';
 import { esc } from './js/formatters.js';
 
 import { RiskComponent } from './js/components/risk.js';
-import { BankComponent } from './js/components/bank.js';
 import { TranscriptComponent } from './js/components/transcript.js';
 import { EvidenceComponent } from './js/components/evidence.js';
 import { TelemetryStripComponent } from './js/components/strip.js';
@@ -18,7 +17,6 @@ import { ReportModal } from './js/components/report.js';
 class CallShieldApp {
   constructor() {
     this.ws = null;
-    this.transferPollInterval = null;
 
     // Component instances
     this.chakshu = new ChakshuWorkflow('chakshuModal');
@@ -29,12 +27,6 @@ class CallShieldApp {
       () => this.promptEndCall(),
       () => this.openChakshuForActive(),
       () => this.openReportForActive()
-    );
-
-    this.bankComp = new BankComponent(
-      'bankContainer',
-      api,
-      () => this.refreshTransfers()
     );
 
     this.transcriptComp = new TranscriptComponent(
@@ -79,12 +71,6 @@ class CallShieldApp {
     // Subscribe to state notifications
     state.subscribe((event, payload) => this.onStateChange(event, payload));
 
-    // Periodic settlement refresh for active session bank transfers
-    this.transferPollInterval = setInterval(() => {
-      if (state.selectedSessionId) {
-        this.refreshTransfers().catch(() => {});
-      }
-    }, 3000);
   }
 
   _bindGlobalDom() {
@@ -254,25 +240,13 @@ class CallShieldApp {
 
     const active = state.activeSession;
     const latestAsm = state.getLatestAssessment();
-    const isFrozen = Boolean(active.health && active.health.bank_frozen);
 
     this.stripComp.render(active.health);
     this.riskComp.render(latestAsm, active.health, state.selectedSessionId, api.getToken());
     this.visionComp.setSession(state.selectedSessionId);
-    this.bankComp.render(active.transfers, state.selectedSessionId, isFrozen);
     this.transcriptComp.render(active.events, active.flaggedEvents, state.selectedSessionId);
     this.evidenceComp.render(active.events, active.retractions);
     this.diagComp.render(active.health, active.events);
-  }
-
-  async refreshTransfers() {
-    if (!state.selectedSessionId) return;
-    try {
-      const transfers = await api.listTransfers(state.selectedSessionId);
-      state.setTransfers(transfers);
-      const isFrozen = Boolean(state.activeSession.health && state.activeSession.health.bank_frozen);
-      this.bankComp.render(transfers, state.selectedSessionId, isFrozen);
-    } catch {}
   }
 
   async openChakshuForActive() {
@@ -295,7 +269,16 @@ class CallShieldApp {
         api.getReport(state.selectedSessionId, 'json'),
         api.getReport(state.selectedSessionId, 'md'),
       ]);
-      this.reportModal.open(jsonReport, mdReport, state.selectedSessionId);
+      const sid = state.selectedSessionId;
+      this.reportModal.open(jsonReport, mdReport, sid);
+      // The AI summary takes a few seconds: show the report now, fill the summary in after.
+      try {
+        const summary = await api.getSummary(sid);
+        const md = await api.getReport(sid, 'md');
+        this.reportModal.setSummary(summary, md);
+      } catch (err) {
+        this.reportModal.setSummary({ error: err.message }, null);
+      }
     } catch (err) {
       alert(`Could not load report: ${err.message}`);
     }
@@ -368,9 +351,6 @@ class CallShieldApp {
           }
         } else if (ev.event_type === 'action') {
           this.diagComp.render(active.health, active.events);
-          if (ev.payload.action_type === 'bank_hold') {
-            this.refreshTransfers();
-          }
         }
       }
       this.renderSidebarSessions();

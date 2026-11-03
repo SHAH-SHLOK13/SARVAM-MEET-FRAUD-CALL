@@ -90,30 +90,17 @@ class ApiClient {
     return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/vision/latest`);
   }
 
-  // Mock Bank
-  async listTransfers(sessionId = null) {
-    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-    return await this.request(`/api/bank/transfers${q}`);
+  // Call summary (Sarvam LLM, cached server-side) and key-moment screenshots
+  async getSummary(sessionId) {
+    return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, { method: 'POST' });
   }
 
-  async createTransfer(sessionId, amount, payee) {
-    return await this.request('/api/bank/transfers', {
-      method: 'POST',
-      body: JSON.stringify({ session_id: sessionId, amount: Number(amount), payee }),
-    });
+  async getFrames(sessionId) {
+    return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/frames`);
   }
 
-  async releaseTransfer(transferId) {
-    return await this.request(`/api/bank/transfers/${encodeURIComponent(transferId)}/release`, {
-      method: 'POST',
-    });
-  }
-
-  async verifyAttestation(attestation) {
-    return await this.request('/api/bank/verify', {
-      method: 'POST',
-      body: JSON.stringify(attestation),
-    });
+  frameUrl(sessionId, frameId) {
+    return `/api/sessions/${encodeURIComponent(sessionId)}/frames/${encodeURIComponent(frameId)}.jpg?token=${encodeURIComponent(this.token)}`;
   }
 }
 

@@ -14,9 +14,8 @@ from pydantic import ValidationError
 
 from . import framing
 from .adapter import AIPipeline
-from .bank import MockBank
 from .contracts import (
-    Action, Assessment, AudioChunk, ChatMessage, Control, Envelope, Evidence,
+    LEVEL_ORDER, Action, Assessment, AudioChunk, ChatMessage, Control, Envelope, Evidence,
     Retraction, Utterance, VideoFrame, make_event, new_id, now_ms, parse_payload,
 )
 from .fusion import RiskConfig, RiskEngine
@@ -31,6 +30,7 @@ MAX_VIDEO_BYTES = 2 * 1024 * 1024
 AUDIO_STALE_MS = 5000
 PIPELINE_ERROR_WINDOW_MS = 15000
 ASSESSMENT_REFRESH_MS = 10000
+MAX_KEY_FRAMES = 20           # screenshots kept per call (risk rises, flagged chat, shown documents)
 
 
 @dataclass
@@ -38,7 +38,6 @@ class Deps:
     cfg: RiskConfig
     store: Store
     hub: Hub
-    bank: MockBank
     pipeline: AIPipeline
     pipeline_timeout_s: float = 10.0
 
@@ -63,6 +62,9 @@ class Session:
         # event_id / utterance_id / message_id -> speaker role ("video" for frames)
         self.refs: dict[str, str] = {}
         self.latest: Assessment | None = None
+        self._peak_level = "normal"
+        self._capture: list[str] = []  # reasons waiting for the next video frame
+        self.key_frames = 0
         self._last_pushed_ms = 0
         self._lock = asyncio.Lock()
         self._audio_q: asyncio.Queue = asyncio.Queue(maxsize=200)
@@ -137,6 +139,13 @@ class Session:
                 return
             self.last_media_ms["video"] = now_ms()
             self.counters["video_frames"] += 1
+            if self._capture and self.key_frames < MAX_KEY_FRAMES:
+                # The frame right after the moment: shows the chat panel / document as it was.
+                self.key_frames += 1
+                self.d.store.add_frame(new_id("kf"), self.id, payload.t_ms, " · ".join(self._capture)[:500],
+                                       self.latest.risk_index if self.latest else None, body)
+                self._capture = []
+                self.counters["key_frames"] += 1
             self.refs[env.event_id] = "video"
             self._put_dropping_oldest(self._video_q, (env, payload, body), "video_dropped")
         else:
@@ -274,6 +283,10 @@ class Session:
             return
         self.counters["evidence"] += 1
         self._record(env)
+        label = self.d.cfg.categories[payload.category].label
+        if payload.source_modality in ("chat", "video") and self.d.cfg.categories[payload.category].effect == "raise":
+            where = "Chat" if payload.source_modality == "chat" else "Shown on video"
+            self._request_capture(f"{where}: {label} “{payload.quoted_text_or_observation[:80]}”")
         await self.reassess(force=True)
 
     @staticmethod
@@ -333,6 +346,10 @@ class Session:
                 latency_ms=latency,
                 config_version=self.d.cfg.version,
             )
+            if LEVEL_ORDER[a.risk_level] > LEVEL_ORDER[self._peak_level] and a.risk_level in ("high", "critical"):
+                self._request_capture(f"Risk rose to {a.risk_level.upper()} ({a.risk_index}/100)")
+            if LEVEL_ORDER[a.risk_level] > LEVEL_ORDER[self._peak_level]:
+                self._peak_level = a.risk_level
             changed = self._differs(a)
             if force or changed or t - self._last_pushed_ms >= ASSESSMENT_REFRESH_MS:
                 self.latest = a
@@ -351,15 +368,6 @@ class Session:
 
     async def issue_action(self, action_type: str, status: str, details: dict,
                            triggering_assessment_id: str | None) -> Envelope:
-        if action_type == "bank_hold":
-            claims = {
-                "session_id": self.id,
-                "assessment_id": triggering_assessment_id,
-                "risk_index": self.latest.risk_index if self.latest else None,
-                "risk_level": self.latest.risk_level if self.latest else None,
-                "issued_ms": now_ms(),
-            }
-            details = details | {"attestation": self.d.bank.freeze(self.id, claims)}
         act = Action(action_id=new_id("act"), action_type=action_type, status=status,
                      triggering_assessment_id=triggering_assessment_id, details=details)
         env = make_event(self.id, "action", "policy", act)
@@ -369,6 +377,10 @@ class Session:
         return env
 
     # ---------- plumbing ----------
+
+    def _request_capture(self, reason: str) -> None:
+        if self.key_frames < MAX_KEY_FRAMES and reason not in self._capture:
+            self._capture.append(reason)
 
     async def _send_ext(self, env: Envelope) -> None:
         ws = self.ext_ws
@@ -409,7 +421,6 @@ class Session:
             "counters": dict(self.counters),
             "queues": {"audio": self._audio_q.qsize(), "video": self._video_q.qsize(),
                        "text": self._text_q.qsize()},
-            "bank_frozen": self.d.bank.is_frozen(self.id),
             "config_version": self.d.cfg.version,
         }
 

@@ -122,7 +122,7 @@ class Assessment(_Strict):
 
 
 ActionType = Literal[
-    "auto_disconnect", "manual_end_call", "close_tab_fallback", "bank_hold", "report_generated",
+    "auto_disconnect", "manual_end_call", "close_tab_fallback", "report_generated",
 ]
 ActionStatus = Literal[
     "requested", "pending", "cancelled", "left_meet", "target_tab_closed",

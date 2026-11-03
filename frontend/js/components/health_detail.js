@@ -41,7 +41,6 @@ export class DiagnosticsComponent {
       ['Ingest Queues', `Audio: ${health.queues?.audio || 0}/200 | Video: ${health.queues?.video || 0}/2 | Text: ${health.queues?.text || 0}/200`],
       ['Dropped Packets', `Audio: ${health.counters?.audio_dropped || 0} backend | Video: ${health.counters?.video_dropped || 0} backend`],
       ['Auto-Disconnect Setting', !health.session_start_received ? 'Unknown (extension settings not received)' : health.settings?.auto_disconnect ? 'Opted-in by user' : 'Disabled by user'],
-      ['Simulated Bank Hold', health.bank_frozen ? 'FROZEN (Simulated hold on transfers)' : 'Inactive'],
     ];
 
     const rejected = Object.entries(health.counters || {}).filter(([k]) => k.startsWith('rejected_'));

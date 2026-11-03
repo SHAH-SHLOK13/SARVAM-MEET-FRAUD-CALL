@@ -75,14 +75,11 @@ def test_end_to_end_chat_to_assessment(client):
         assert c["chat_duplicates"] == 1
 
 
-def test_inject_and_report_and_bank_hold(client):
+def test_inject_and_report(client):
     with client.websocket_connect(f"/ws/ingest?token={TOKEN}&session_id={SID}") as ws:
         ws.send_text(make_event(SID, "control", "extension", {
             "command": "session_start", "details": {}}).model_dump_json())
         ws.send_bytes(audio_frame(0))
-        tx = client.post(f"/api/bank/transfers?token={TOKEN}",
-                         json={"session_id": SID, "amount": 50000, "payee": "x@upi"}).json()
-        assert tx["status"] == "PENDING" and tx["simulated"] is True
         for text in ["Main CBI officer bol raha hoon",
                      "Aap digital arrest mein hain",
                      "Abhi verification ke liye paise transfer karna padega",
@@ -91,14 +88,10 @@ def test_inject_and_report_and_bank_hold(client):
             assert r.status_code == 200
         recv_until(ws, lambda m: m["event_type"] == "assessment" and m["payload"]["risk_level"] == "critical")
         time.sleep(0.3)
-        tx2 = client.get(f"/api/bank/transfers?token={TOKEN}&session_id={SID}").json()[0]
-        assert tx2["status"] == "HOLD"
-        assert client.post(f"/api/bank/verify?token={TOKEN}", json=tx2["attestation"]).json()["valid"]
 
         rep = client.get(f"/api/sessions/{SID}/report?token={TOKEN}").json()
         assert rep["official_complaint_submitted"] is False
         assert rep["peak_assessment"]["risk_level"] == "critical"
-        assert any(a["action_type"] == "bank_hold" for a in rep["actions"])
         # mock inference never auto-disconnects with default config
         assert not any(a["action_type"] == "auto_disconnect" for a in rep["actions"])
 
@@ -171,3 +164,26 @@ def test_retraction_lowers_risk(client):
         b = recv_until(ws, lambda m: m["event_type"] == "assessment" and m["payload"]["risk_index"] == 0)
         assert b["payload"]["risk_level"] == "normal"
         assert session.counters["retractions"] == 1
+
+
+def video_frame(seq, jpeg=b"\xff\xd8fakejpeg\xff\xd9"):
+    env = make_event(SID, "video_frame", "meet_tab", {
+        "seq": seq, "t_ms": now_ms(), "width": 640, "height": 360, "encoding": "jpeg"})
+    return framing.encode(env.model_dump(), jpeg)
+
+
+def test_screenshot_taken_when_risk_rises_and_for_flagged_chat(client):
+    with client.websocket_connect(f"/ws/ingest?token={TOKEN}&session_id={SID}") as ws:
+        ws.send_bytes(video_frame(0))  # nothing risky yet: no screenshot
+        ws.send_text(chat("m1", "Main CBI officer bol raha hoon, aap digital arrest mein hain"))
+        recv_until(ws, lambda m: m["event_type"] == "assessment" and m["payload"]["risk_level"] != "normal")
+        ws.send_bytes(video_frame(1))  # the frame right after the flagged chat
+        time.sleep(0.3)
+        frames = client.get(f"/api/sessions/{SID}/frames?token={TOKEN}").json()
+        assert len(frames) == 1 and "Chat:" in frames[0]["reason"]
+        jpg = client.get(f"/api/sessions/{SID}/frames/{frames[0]['frame_id']}.jpg?token={TOKEN}")
+        assert jpg.status_code == 200 and jpg.content.startswith(b"\xff\xd8")
+        ws.send_bytes(video_frame(2))  # no new moment: no new screenshot
+        time.sleep(0.2)
+        rep = client.get(f"/api/sessions/{SID}/report?token={TOKEN}").json()
+        assert len(rep["key_frames"]) == 1 and rep["key_frames"][0]["url"].endswith(".jpg")

@@ -1,4 +1,5 @@
-"""SQLite persistence. Media bytes are never stored, only event metadata and evidence."""
+"""SQLite persistence: event metadata and evidence, plus the few key-frame screenshots taken
+at high-risk moments (no audio is ever stored)."""
 
 from __future__ import annotations
 
@@ -26,21 +27,19 @@ CREATE TABLE IF NOT EXISTS events (
     body         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, event_type, id);
-CREATE TABLE IF NOT EXISTS transfers (
-    transfer_id  TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS key_frames (
+    frame_id     TEXT PRIMARY KEY,
     session_id   TEXT NOT NULL,
-    amount       REAL NOT NULL,
-    payee        TEXT NOT NULL,
-    status       TEXT NOT NULL,
-    created_ms   INTEGER NOT NULL,
-    updated_ms   INTEGER NOT NULL,
-    reason       TEXT NOT NULL DEFAULT '',
-    attestation  TEXT NOT NULL DEFAULT '{}'
+    t_ms         INTEGER NOT NULL,
+    reason       TEXT NOT NULL,
+    risk_index   INTEGER,
+    jpeg         BLOB NOT NULL
 );
-CREATE TABLE IF NOT EXISTS bank_freezes (
+CREATE INDEX IF NOT EXISTS key_frames_session ON key_frames(session_id, t_ms);
+CREATE TABLE IF NOT EXISTS summaries (
     session_id   TEXT PRIMARY KEY,
-    frozen_ms    INTEGER NOT NULL,
-    attestation  TEXT NOT NULL
+    n_events     INTEGER NOT NULL,
+    body         TEXT NOT NULL
 );
 """
 
@@ -95,6 +94,29 @@ class Store:
         params.append(limit)
         rows = self.execute(sql, tuple(params))
         return [json.loads(r["body"]) for r in reversed(rows)]
+
+    def add_frame(self, frame_id: str, session_id: str, t_ms: int, reason: str,
+                  risk_index: int | None, jpeg: bytes) -> None:
+        self.execute("INSERT INTO key_frames VALUES (?,?,?,?,?,?)",
+                     (frame_id, session_id, t_ms, reason, risk_index, jpeg))
+
+    def frames(self, session_id: str) -> list[dict[str, Any]]:
+        rows = self.execute("SELECT frame_id, t_ms, reason, risk_index FROM key_frames "
+                            "WHERE session_id=? ORDER BY t_ms", (session_id,))
+        return [dict(r) for r in rows]
+
+    def frame_jpeg(self, session_id: str, frame_id: str) -> bytes | None:
+        rows = self.execute("SELECT jpeg FROM key_frames WHERE session_id=? AND frame_id=?",
+                            (session_id, frame_id))
+        return rows[0]["jpeg"] if rows else None
+
+    def summary(self, session_id: str) -> tuple[int, dict] | None:
+        rows = self.execute("SELECT n_events, body FROM summaries WHERE session_id=?", (session_id,))
+        return (rows[0]["n_events"], json.loads(rows[0]["body"])) if rows else None
+
+    def save_summary(self, session_id: str, n_events: int, body: dict) -> None:
+        self.execute("INSERT OR REPLACE INTO summaries VALUES (?,?,?)",
+                     (session_id, n_events, json.dumps(body, ensure_ascii=False)))
 
     def close(self) -> None:
         with self._lock:

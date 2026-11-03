@@ -120,9 +120,6 @@ async def main() -> int:
                 await asyncio.to_thread(post, a.base, a.token, f"/api/sessions/{sid}/inject_text",
                                         {"text": text, "speaker_role": "remote"})
             await asyncio.sleep(a.gap)
-        await asyncio.to_thread(post, a.base, a.token, "/api/bank/transfers",
-                                {"session_id": sid, "amount": 200000, "payee": "verify.rbi@upi"})
-        print("-> simulated victim transfer of INR 2,00,000")
         await asyncio.sleep(a.linger)
         stop.set()
         await ws.send(json.dumps(env(sid, "control", "extension", {"command": "session_stop", "details": {"reason": "sim_done"}})))
