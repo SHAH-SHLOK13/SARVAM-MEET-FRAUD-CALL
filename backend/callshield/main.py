@@ -68,13 +68,17 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
             await asyncio.sleep(tick_s)
             try:
                 await manager.tick()
-                cutoff = now_ms() - MAX_SESSION_S * 1000
-                for s in list(manager.sessions.values()):
-                    if s.active and s.created_ms < cutoff:
-                        log.warning("session %s hit the %ss cap; stopping", s.id, MAX_SESSION_S)
-                        await s.stop()
             except Exception:  # noqa: BLE001
                 log.exception("tick failed")
+            # Duration cap, enforced even if the tick above failed.
+            cutoff = now_ms() - MAX_SESSION_S * 1000
+            for s in list(manager.sessions.values()):
+                if s.active and s.created_ms < cutoff:
+                    log.warning("session %s hit the %ss cap; stopping", s.id, MAX_SESSION_S)
+                    try:
+                        await s.stop()
+                    except Exception:  # noqa: BLE001
+                        log.exception("stopping %s failed", s.id)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -126,10 +130,11 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
         if not demo.can_start() or not admit_new_session():
             raise HTTPException(429, "a demo is already running or the usage cap is reached; try again in a minute")
         sid = demo.new_session_id()
+        demo.reserve(sid)  # before any await: concurrent requests see the slot as taken
         task = asyncio.create_task(demo.run(manager, scenario, sid))
         demo_tasks.add(task)
         task.add_done_callback(demo_tasks.discard)
-        pcm_s = len(demo.scenario_pcm(scenario)) / 32000
+        pcm_s = demo.duration_s(scenario)
         return {"session_id": sid, "label": demo.SCENARIOS[scenario]["label"], "duration_s": round(pcm_s, 1),
                 "audio_url": f"/api/demo/audio/{scenario}.wav"}
 
@@ -138,7 +143,7 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
         if scenario not in demo.SCENARIOS:
             raise HTTPException(404, "unknown scenario")
         return Response(content=demo.scenario_wav(scenario), media_type="audio/wav",
-                        headers={"Cache-Control": "private, max-age=3600"})
+                        headers={"Cache-Control": "no-store"})
 
     # ---------- WebSockets ----------
 
@@ -147,7 +152,9 @@ def create_app(*, config_path: str | None = None, pipeline: AIPipeline | None = 
         if not token_ok(token) or not re.match(SESSION_ID_RE, session_id):
             await ws.close(code=4401)
             return
-        if session_id not in manager.sessions and not admit_new_session():
+        existing = manager.sessions.get(session_id)
+        # attach() creates a new Session for an unknown OR ended id: both count against the caps.
+        if (existing is None or not existing.active) and not admit_new_session():
             await ws.close(code=4429)  # usage cap reached
             return
         await ws.accept()

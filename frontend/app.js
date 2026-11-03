@@ -159,7 +159,9 @@ class CallShieldApp {
     try {
       const d = await api.startDemo(btn.dataset.scenario);
       if (this.demoAudio) this.demoAudio.pause();
-      this.demoAudio = new Audio(api.withToken(d.audio_url));
+      // Fetched with the Authorization header (no token in the URL), played from a blob.
+      const res = await fetch(d.audio_url, { headers: { Authorization: `Bearer ${api.getToken()}` } });
+      this.demoAudio = new Audio(URL.createObjectURL(await res.blob()));
       this.demoAudio.play().catch(() => {});
       await new Promise((r) => setTimeout(r, 800)); // let the session register
       await this.loadSessions();

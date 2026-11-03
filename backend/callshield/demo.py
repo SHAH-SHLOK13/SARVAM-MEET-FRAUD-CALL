@@ -10,6 +10,7 @@ plays the same audio aloud so the viewer hears what is being analysed.
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import logging
 import time
@@ -48,6 +49,7 @@ _running: dict[str, float] = {}  # session_id -> start time
 MAX_RUNNING = 2
 
 
+@functools.lru_cache(maxsize=None)
 def scenario_pcm(name: str) -> bytes:
     """16 kHz mono s16le PCM of a scenario (recordings joined with 1 s of silence)."""
     out = b""
@@ -58,6 +60,11 @@ def scenario_pcm(name: str) -> bytes:
     return out
 
 
+def duration_s(name: str) -> float:
+    return round(len(scenario_pcm(name)) / 32000, 1)
+
+
+@functools.lru_cache(maxsize=None)
 def scenario_wav(name: str) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -85,6 +92,10 @@ def can_start() -> bool:
     return len(_running) < MAX_RUNNING
 
 
+def reserve(sid: str) -> None:
+    _running[sid] = time.monotonic()
+
+
 def new_session_id() -> str:
     return f"demo-{time.strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:4]}"
 
@@ -94,7 +105,8 @@ async def run(manager, scenario: str, sid: str) -> None:
     pcm = scenario_pcm(scenario)
     images = {f: (EVAL / "images" / f).read_bytes() for _, f in sc["frames"]}
     ws = _DemoSocket()
-    _running[sid] = time.monotonic()
+    _running[sid] = time.monotonic()  # already reserved by the endpoint; refresh the start time
+    s = None
     s = await manager.attach(sid, ws)
     try:
         await s.handle_text(make_event(sid, "control", "extension", {"command": "session_start", "details": {
@@ -135,4 +147,5 @@ async def run(manager, scenario: str, sid: str) -> None:
         log.exception("demo %s failed", sid)
     finally:
         _running.pop(sid, None)
-        await manager.detach(s, ws)
+        if s is not None:
+            await manager.detach(s, ws)
