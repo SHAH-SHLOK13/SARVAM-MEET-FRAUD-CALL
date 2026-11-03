@@ -3,6 +3,7 @@
 // screenshots the backend kept at key moments (risk rose, chat flagged, document shown).
 
 import { esc, fmtTime } from '../formatters.js';
+import { summaryHtml } from './report.js';
 
 export class VisionComponent {
   constructor(containerId, api) {
@@ -28,6 +29,12 @@ export class VisionComponent {
         <img id="visionImg" alt="Last analysed video frame" class="hidden" />
         <div id="visionInfo" class="muted text-muted">No frame analysed yet.</div>
       </div>
+      <div class="mt-4">
+        <div class="panel-title-wrap mb-2"><b>Call summary</b>
+          <span class="muted small text-muted text-xs">(what happened between the user and the other party; updates at each key moment)</span>
+          <button class="btn btn-xs btn-ghost" id="summaryRefreshBtn">↻ Refresh summary</button></div>
+        <div id="callSummary" class="summary-card"><div class="muted">No session selected.</div></div>
+      </div>
       <div id="keyFrames" class="mt-4"></div>
     `;
   }
@@ -37,8 +44,13 @@ export class VisionComponent {
     this.sessionId = sessionId;
     this.lastVisionEvent = null;
     this.frameCount = -1;
+    this.summarySeq = (this.summarySeq || 0) + 1;
     const kf = document.getElementById('keyFrames');
     if (kf) kf.innerHTML = '';
+    const cs = document.getElementById('callSummary');
+    if (cs) cs.innerHTML = '<div class="muted">Waiting for the call…</div>';
+    const btn = document.getElementById('summaryRefreshBtn');
+    if (btn) btn.onclick = () => this.refreshSummary();
     const img = document.getElementById('visionImg');
     const info = document.getElementById('visionInfo');
     if (img) {
@@ -81,6 +93,7 @@ export class VisionComponent {
     }
     if (frames.length === this.frameCount) return;
     this.frameCount = frames.length;
+    this.refreshSummary(); // a new key moment (or first load): bring the summary up to date
     el.innerHTML = `
       <div class="panel-title-wrap mb-2"><b>Key moments</b>
         <span class="muted small text-muted text-xs">(screenshots taken when risk rose to HIGH/CRITICAL, a chat was flagged, or a document was shown)</span></div>
@@ -89,6 +102,22 @@ export class VisionComponent {
           <img src="${this.api.frameUrl(this.sessionId, f.frame_id)}" alt="${esc(f.reason)}" loading="lazy" />
           <div class="keyframe-cap"><code>${fmtTime(f.t_ms)}</code> · risk ${esc(f.risk_index ?? '–')}<br>${esc(f.reason)}</div>
         </a>`).join('')}</div>` : '<div class="muted text-muted small">None yet.</div>'}`;
+  }
+
+  async refreshSummary() {
+    const el = document.getElementById('callSummary');
+    if (!el || !this.sessionId) return;
+    const seq = (this.summarySeq = (this.summarySeq || 0) + 1);
+    const sid = this.sessionId;
+    el.innerHTML = summaryHtml(null);
+    let s;
+    try {
+      s = await this.api.getSummary(sid);
+    } catch (err) {
+      // 404 = nothing said yet in this session
+      s = { error: String(err.message || err).startsWith('404') ? 'nothing to summarise yet' : err.message };
+    }
+    if (seq === this.summarySeq && sid === this.sessionId) el.innerHTML = summaryHtml(s);
   }
 
   async refresh() {

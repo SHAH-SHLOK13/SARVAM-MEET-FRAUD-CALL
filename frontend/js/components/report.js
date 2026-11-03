@@ -3,6 +3,21 @@
 import { esc, fmtDateTime } from '../formatters.js';
 import { api } from '../api.js';
 
+const VERDICT_TEXT = { likely_scam: 'LIKELY SCAM', awareness_or_joke: 'AWARENESS / JOKE / TEST', benign: 'BENIGN', unclear: 'UNCLEAR' };
+const VERDICT_CLS = { likely_scam: 'danger', awareness_or_joke: 'ok', benign: 'ok', unclear: 'warn' };
+
+/** AI call summary (verdict, headline, summary, timeline, advice) as HTML; shared with the vision panel. */
+export function summaryHtml(s) {
+  if (!s) return '<div class="muted">Generating summary with Sarvam AI…</div>';
+  if (s.error) return `<div class="muted">Summary unavailable: ${esc(s.error)}</div>`;
+  return `
+    <div class="summary-headline"><span class="badge badge-${VERDICT_CLS[s.verdict] || 'warn'}">${esc(VERDICT_TEXT[s.verdict] || s.verdict)}</span> <b>${esc(s.headline)}</b></div>
+    <p class="summary-text">${esc(s.summary)}</p>
+    ${(s.timeline || []).length ? `<ul class="summary-timeline">${s.timeline.map(t => `<li><code>${esc(t.time)}</code> ${esc(t.what)}</li>`).join('')}</ul>` : ''}
+    ${s.advice ? `<div class="summary-advice"><b>Advice:</b> ${esc(s.advice)}</div>` : ''}
+    <div class="muted small">Written by ${esc(s.model || 'Sarvam AI')} from the call ledger; the risk score itself is deterministic.</div>`;
+}
+
 export class ReportModal {
   constructor(containerId, onOpenChakshu) {
     this.container = document.getElementById(containerId);
@@ -30,18 +45,7 @@ export class ReportModal {
   }
 
   _renderSummary(r) {
-    const s = r.call_summary;
-    const verdictText = { likely_scam: 'LIKELY SCAM', awareness_or_joke: 'AWARENESS / JOKE / TEST', benign: 'BENIGN', unclear: 'UNCLEAR' };
-    const verdictCls = { likely_scam: 'danger', awareness_or_joke: 'ok', benign: 'ok', unclear: 'warn' };
-    let body;
-    if (!s) body = '<div class="muted">Generating summary with Sarvam AI…</div>';
-    else if (s.error) body = `<div class="muted">Summary unavailable: ${esc(s.error)}</div>`;
-    else body = `
-      <div class="summary-headline"><span class="badge badge-${verdictCls[s.verdict] || 'warn'}">${esc(verdictText[s.verdict] || s.verdict)}</span> <b>${esc(s.headline)}</b></div>
-      <p class="summary-text">${esc(s.summary)}</p>
-      ${(s.timeline || []).length ? `<ul class="summary-timeline">${s.timeline.map(t => `<li><code>${esc(t.time)}</code> ${esc(t.what)}</li>`).join('')}</ul>` : ''}
-      ${s.advice ? `<div class="summary-advice"><b>Advice:</b> ${esc(s.advice)}</div>` : ''}
-      <div class="muted small">Written by ${esc(s.model || 'Sarvam AI')} from the call ledger; the risk score itself is deterministic.</div>`;
+    const body = summaryHtml(r.call_summary);
     const frames = r.key_frames || [];
     const gallery = frames.length ? `
       <h3 class="section-heading">Screenshots of key moments (${frames.length})</h3>
